@@ -23,6 +23,7 @@ import {
 import {
   CHILD_EXPANSION_OPTIONS,
   CUSTOM_COLOR_DEFAULTS,
+  CUSTOM_COLOR_LABEL_PREFIX,
   PALETTE_PRESET_OPTIONS,
   ROW_DENSITY_OPTIONS,
   STATUS_DISPLAY_OPTIONS,
@@ -276,60 +277,24 @@ export default function plugin(bb: BbPluginApi) {
       options: [...PALETTE_PRESET_OPTIONS],
       default: "Default",
     },
-    workingColor: colorSetting("Custom · Working", CUSTOM_COLOR_DEFAULTS.working),
-    workflowColor: colorSetting(
-      "Custom · Workflow",
-      CUSTOM_COLOR_DEFAULTS.workflow,
-    ),
-    agentColor: colorSetting("Custom · Agent", CUSTOM_COLOR_DEFAULTS.agent),
-    commandColor: colorSetting(
-      "Custom · Command",
-      CUSTOM_COLOR_DEFAULTS.command,
-    ),
-    planColor: colorSetting("Custom · Plan", CUSTOM_COLOR_DEFAULTS.plan),
-    goalColor: colorSetting("Custom · Goal", CUSTOM_COLOR_DEFAULTS.goal),
-    waitingColor: colorSetting(
-      "Custom · Stalled / waiting",
-      CUSTOM_COLOR_DEFAULTS.waiting,
-    ),
-    unreadColor: colorSetting(
-      "Custom · Waiting to read",
-      CUSTOM_COLOR_DEFAULTS.unread,
-    ),
-    errorColor: colorSetting("Custom · Error", CUSTOM_COLOR_DEFAULTS.error),
-    idleColor: colorSetting(
-      "Custom · Inactive",
-      CUSTOM_COLOR_DEFAULTS.inactive,
-    ),
-    staleColor: colorSetting("Custom · Stale", CUSTOM_COLOR_DEFAULTS.stale),
-    prReviewColor: colorSetting(
-      "Custom · PR review",
-      CUSTOM_COLOR_DEFAULTS.prReview,
-    ),
-    prChecksColor: colorSetting(
-      "Custom · PR checks",
-      CUSTOM_COLOR_DEFAULTS.prChecks,
-    ),
-    prReadyColor: colorSetting(
-      "Custom · PR ready",
-      CUSTOM_COLOR_DEFAULTS.prReady,
-    ),
-    prMergedColor: colorSetting(
-      "Custom · PR merged",
-      CUSTOM_COLOR_DEFAULTS.prMerged,
-    ),
-    prDraftColor: colorSetting(
-      "Custom · PR draft",
-      CUSTOM_COLOR_DEFAULTS.prDraft,
-    ),
-    prBlockedColor: colorSetting(
-      "Custom · PR blocked",
-      CUSTOM_COLOR_DEFAULTS.prBlocked,
-    ),
-    prClosedColor: colorSetting(
-      "Custom · PR closed",
-      CUSTOM_COLOR_DEFAULTS.prClosed,
-    ),
+    workingColor: colorSetting("Working", CUSTOM_COLOR_DEFAULTS.working),
+    workflowColor: colorSetting("Workflow", CUSTOM_COLOR_DEFAULTS.workflow),
+    agentColor: colorSetting("Agent", CUSTOM_COLOR_DEFAULTS.agent),
+    commandColor: colorSetting("Command", CUSTOM_COLOR_DEFAULTS.command),
+    planColor: colorSetting("Plan", CUSTOM_COLOR_DEFAULTS.plan),
+    goalColor: colorSetting("Goal", CUSTOM_COLOR_DEFAULTS.goal),
+    waitingColor: colorSetting("Stalled / waiting", CUSTOM_COLOR_DEFAULTS.waiting),
+    unreadColor: colorSetting("Waiting to read", CUSTOM_COLOR_DEFAULTS.unread),
+    errorColor: colorSetting("Error", CUSTOM_COLOR_DEFAULTS.error),
+    idleColor: colorSetting("Inactive", CUSTOM_COLOR_DEFAULTS.inactive),
+    staleColor: colorSetting("Stale", CUSTOM_COLOR_DEFAULTS.stale),
+    prReviewColor: colorSetting("PR review", CUSTOM_COLOR_DEFAULTS.prReview),
+    prChecksColor: colorSetting("PR checks", CUSTOM_COLOR_DEFAULTS.prChecks),
+    prReadyColor: colorSetting("PR ready", CUSTOM_COLOR_DEFAULTS.prReady),
+    prMergedColor: colorSetting("PR merged", CUSTOM_COLOR_DEFAULTS.prMerged),
+    prDraftColor: colorSetting("PR draft", CUSTOM_COLOR_DEFAULTS.prDraft),
+    prBlockedColor: colorSetting("PR blocked", CUSTOM_COLOR_DEFAULTS.prBlocked),
+    prClosedColor: colorSetting("PR closed", CUSTOM_COLOR_DEFAULTS.prClosed),
     statusDisplay: {
       type: "select",
       label: "Status display",
@@ -808,10 +773,10 @@ export default function plugin(bb: BbPluginApi) {
   bb.events.on("thread.failed", republishIfSettled);
 }
 
-function colorSetting(label: string, defaultColor: string) {
+function colorSetting(name: string, defaultColor: string) {
   return {
     type: "string" as const,
-    label,
+    label: `${CUSTOM_COLOR_LABEL_PREFIX}${name}`,
     description: "Six-digit hex color (#RRGGBB); used only by Custom palette.",
     default: defaultColor,
   };

@@ -6,6 +6,7 @@ import { ThreadInbox } from "@/components/inbox/thread-inbox";
 import { ParentChip } from "@/components/inbox/parent-chip";
 import { DocksideSettingsSection } from "@/components/settings/dockside-settings";
 import { MobileNavigation } from "@/components/mobile/navigation";
+import { mountSettingsColorFields } from "@/lib/settings-color-fields";
 
 export default definePluginApp((app) => {
   app.composer.customize({
@@ -13,6 +14,15 @@ export default definePluginApp((app) => {
     scopes: ["thread"],
     banners: [{ id: "navigation", chrome: "bare", component: MobileNavigation }],
   });
+
+  // The custom palette fields are drawn by the host, whose setting descriptors
+  // stop at plain strings. Decorating them in place gives each one a live
+  // swatch and a color picker without moving the values out of bb's settings.
+  app.contentScripts.register({
+    id: "settings-color-fields",
+    mount: ({ pluginId, signal }) => mountSettingsColorFields(signal, pluginId),
+  });
+
   app.slots.settingsSection({
     id: "appearance",
     title: "Appearance & behavior",

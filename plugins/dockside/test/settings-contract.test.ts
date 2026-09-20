@@ -24,6 +24,14 @@ const projectColorsHook = await readFile(
   new URL("../hooks/use-project-colors.ts", import.meta.url),
   "utf8",
 );
+const colorFields = await readFile(
+  new URL("../lib/settings-color-fields.ts", import.meta.url),
+  "utf8",
+);
+const preferences = await readFile(
+  new URL("../lib/preferences.ts", import.meta.url),
+  "utf8",
+);
 
 describe("Dockside settings contract", () => {
   it("declares every palette and behavior setting with safe defaults", () => {
@@ -109,6 +117,34 @@ describe("Dockside settings contract", () => {
     assert.match(projectGroup, /color: badge\.foregroundColor/);
     assert.match(projectColorsHook, /useRealtime\("project-colors"/);
     assert.match(projectColorsHook, /previous === "reconnecting"/);
+  });
+
+  it("decorates the host's own custom color fields instead of shadowing them", () => {
+    // The label is the contract between the setting and the decorator, so the
+    // prefix has to come from one place rather than being spelled out twice.
+    assert.match(preferences, /export const CUSTOM_COLOR_LABEL_PREFIX = "Custom · ";/);
+    assert.match(server, /label: `\$\{CUSTOM_COLOR_LABEL_PREFIX\}\$\{name\}`/);
+    assert.match(colorFields, /import \{ CUSTOM_COLOR_LABEL_PREFIX \}/);
+
+    assert.match(app, /app\.contentScripts\.register\(/);
+    assert.match(app, /id: "settings-color-fields"/);
+    assert.match(app, /mountSettingsColorFields\(signal, pluginId\)/);
+
+    // Scoped to this plugin's own panel, found through the id bb hands us.
+    assert.match(colorFields, /plugin-detail-\$\{pluginId/);
+    assert.match(colorFields, /input\[aria-label\^=/);
+
+    // The host keeps a draft on input and persists it on blur; writing the
+    // property directly would skip both, so both steps must stay.
+    assert.match(colorFields, /Object\.getOwnPropertyDescriptor\(/);
+    assert.match(colorFields, /new view\.Event\("input", \{ bubbles: true \}\)/);
+    assert.match(colorFields, /requestAnimationFrame\(/);
+    assert.match(colorFields, /field\.blur\(\)/);
+
+    // Nothing may outlive the content script generation.
+    assert.match(colorFields, /observer\.disconnect\(\)/);
+    assert.match(colorFields, /window\.removeEventListener\("resize", schedule\)/);
+    assert.match(colorFields, /signal\.addEventListener\("abort", dispose/);
   });
 
   it("uses optional metadata and layout preferences without changing defaults", () => {

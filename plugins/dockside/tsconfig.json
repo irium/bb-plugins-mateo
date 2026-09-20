@@ -15,6 +15,9 @@
     "paths": {
       "@/*": [
         "./*"
+      ],
+      "jsdom": [
+        "./types/jsdom.d.ts"
       ]
     },
     "allowImportingTsExtensions": true,

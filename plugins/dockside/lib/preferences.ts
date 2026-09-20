@@ -49,6 +49,12 @@ export interface DocksidePreferences {
   showRelativeTime: boolean;
 }
 
+/**
+ * Prefix on every host-rendered custom palette field label. The settings
+ * decorator finds those fields by their label, so the two must stay in step.
+ */
+export const CUSTOM_COLOR_LABEL_PREFIX = "Custom · ";
+
 export const CUSTOM_COLOR_DEFAULTS = {
   working: "#D99B00",
   workflow: "#8B5CF6",
