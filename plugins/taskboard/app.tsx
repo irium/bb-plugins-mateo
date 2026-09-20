@@ -96,6 +96,7 @@ import {
   type WorkItemFilterField
 } from './board-settings.js';
 import {
+  isAtlassianCloudHost,
   jiraBaseUrlSchema,
   projectCredentialsInteractionPayloadSchema,
   projectCredentialsInteractionResponseSchema
@@ -5045,6 +5046,7 @@ function configFingerprint(config: ProjectConfigView): string {
     source: config.source,
     linearTeamKey: config.linearTeamKey,
     jiraBaseUrl: config.jiraBaseUrl,
+    jiraDeployment: config.jiraDeployment,
     jiraEmail: config.jiraEmail,
     jiraJql: config.jiraJql
   });
@@ -5165,15 +5167,36 @@ function ProjectConfigForm({
     }
     const parsedUrl = jiraBaseUrlSchema.safeParse(config.jiraBaseUrl.trim());
     if (!parsedUrl.success) {
-      setError('Jira URL must be an HTTPS atlassian.net origin.');
+      setError(
+        'Jira URL must be an HTTPS origin without credentials, query, or fragment.'
+      );
       return;
     }
     const jiraBaseUrl = parsedUrl.data;
+    const isJiraServer = config.jiraDeployment === 'server';
+    // Switching deployment changes what the stored credential even means, so
+    // it counts as an identity change alongside the site and email.
     const jiraIdentityChanged =
       jiraBaseUrl !== baseline.jiraBaseUrl ||
+      config.jiraDeployment !== baseline.jiraDeployment ||
       config.jiraEmail.trim() !== baseline.jiraEmail;
     if (config.source === 'jira') {
-      if (!config.jiraEmail.trim()) {
+      if (jiraBaseUrl) {
+        const cloudHost = isAtlassianCloudHost(new URL(jiraBaseUrl).hostname);
+        if (!isJiraServer && !cloudHost) {
+          setError(
+            'That is not an atlassian.net site. Choose Server / Data Center for a self-hosted Jira.'
+          );
+          return;
+        }
+        if (isJiraServer && cloudHost) {
+          setError(
+            'That is an Atlassian Cloud site. Choose Cloud, which uses an email and API token.'
+          );
+          return;
+        }
+      }
+      if (!isJiraServer && !config.jiraEmail.trim()) {
         setError('Add the Jira account email for this project.');
         return;
       }
@@ -5182,7 +5205,11 @@ function ProjectConfigForm({
         return;
       }
       if (!jiraWillBeConfigured && jiraCredential.operation !== 'clear') {
-        setError('Add a Jira API token for this project.');
+        setError(
+          isJiraServer
+            ? 'Add a Jira Personal Access Token for this project.'
+            : 'Add a Jira API token for this project.'
+        );
         return;
       }
     }
@@ -5192,7 +5219,7 @@ function ProjectConfigForm({
       jiraCredential.operation === 'keep'
     ) {
       setError(
-        'Changing the Jira site or email requires a replacement token or explicit credential removal.'
+        'Changing the Jira site, deployment, or email requires a replacement token or explicit credential removal.'
       );
       return;
     }
@@ -5205,7 +5232,10 @@ function ProjectConfigForm({
         source: config.source,
         linearTeamKey: config.linearTeamKey.trim(),
         jiraBaseUrl,
-        jiraEmail: config.jiraEmail.trim(),
+        jiraDeployment: config.jiraDeployment,
+        // Server/DC has no email to pair with a PAT; sending a stale one would
+        // be rejected by the cross-field rule in the contract.
+        jiraEmail: isJiraServer ? '' : config.jiraEmail.trim(),
         jiraJql: config.jiraJql.trim(),
         linearCredential,
         jiraCredential
@@ -5451,18 +5481,48 @@ function ProjectConfigForm({
                 />
               </div>
               <p className="max-w-xl text-xs leading-relaxed text-muted-foreground">
-                Jira accepts HTTPS atlassian.net sites only. Changing the site
-                or account email requires replacing or removing the token.
+                {config.jiraDeployment === 'server'
+                  ? 'Self-hosted Jira authenticates with a Personal Access Token; a context path and port are supported. Changing the site or deployment requires replacing or removing the token.'
+                  : 'Jira Cloud accepts HTTPS atlassian.net sites with an account email and API token. Changing the site, deployment, or email requires replacing or removing the token.'}
               </p>
             </div>
           </div>
           <div className="mt-4 grid gap-3 @lg:grid-cols-2">
+            <div className="space-y-1.5 text-xs font-medium">
+              <span id="jira-deployment-label">Jira deployment</span>
+              <Select
+                value={config.jiraDeployment}
+                disabled={saving}
+                onValueChange={value => {
+                  setConfig({
+                    ...config,
+                    jiraDeployment: value === 'server' ? 'server' : 'cloud'
+                  });
+                  setSaved(false);
+                }}
+              >
+                <SelectTrigger
+                  aria-labelledby="jira-deployment-label"
+                  className="w-full"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="cloud">Cloud (atlassian.net)</SelectItem>
+                  <SelectItem value="server">Server / Data Center</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
             <label className="space-y-1.5 text-xs font-medium">
               Jira site
               <Input
                 aria-label="Jira site"
                 value={config.jiraBaseUrl}
-                placeholder="https://workspace.atlassian.net"
+                placeholder={
+                  config.jiraDeployment === 'server'
+                    ? 'https://jira.example.com'
+                    : 'https://workspace.atlassian.net'
+                }
                 className="tb-field tb-field-mono"
                 disabled={saving}
                 onChange={event => {
@@ -5471,23 +5531,27 @@ function ProjectConfigForm({
                 }}
               />
             </label>
-            <label className="space-y-1.5 text-xs font-medium">
-              Jira account email
-              <Input
-                type="email"
-                aria-label="Jira account email"
-                value={config.jiraEmail}
-                placeholder="you@example.com"
-                className="tb-field"
-                disabled={saving}
-                onChange={event => {
-                  setConfig({ ...config, jiraEmail: event.target.value });
-                  setSaved(false);
-                }}
-              />
-            </label>
+            {config.jiraDeployment === 'server' ? null : (
+              <label className="space-y-1.5 text-xs font-medium @lg:col-span-2">
+                Jira account email
+                <Input
+                  type="email"
+                  aria-label="Jira account email"
+                  value={config.jiraEmail}
+                  placeholder="you@example.com"
+                  className="tb-field"
+                  disabled={saving}
+                  onChange={event => {
+                    setConfig({ ...config, jiraEmail: event.target.value });
+                    setSaved(false);
+                  }}
+                />
+              </label>
+            )}
             <label className="space-y-1.5 text-xs font-medium @lg:col-span-2">
-              Jira API token{' '}
+              {config.jiraDeployment === 'server'
+                ? 'Jira Personal Access Token'
+                : 'Jira API token'}{' '}
               <span className="font-normal text-muted-foreground">
                 (write-only)
               </span>
@@ -5497,7 +5561,11 @@ function ProjectConfigForm({
                 autoCapitalize="none"
                 autoCorrect="off"
                 spellCheck={false}
-                aria-label="Jira API token"
+                aria-label={
+                  config.jiraDeployment === 'server'
+                    ? 'Jira Personal Access Token'
+                    : 'Jira API token'
+                }
                 value={jiraDraft}
                 placeholder={
                   baseline.jiraCredentialConfigured
@@ -7204,7 +7272,18 @@ function ProjectCredentialsInteractionForm({
         {[
           ['Linear team', payload.linearTeamKey || 'Not configured'],
           ['Jira site', payload.jiraBaseUrl || 'Not configured'],
-          ['Jira account', payload.jiraEmail || 'Not configured']
+          [
+            'Jira deployment',
+            payload.jiraDeployment === 'server'
+              ? 'Server / Data Center'
+              : 'Cloud'
+          ],
+          [
+            'Jira account',
+            payload.jiraDeployment === 'server'
+              ? 'Personal Access Token'
+              : payload.jiraEmail || 'Not configured'
+          ]
         ].map(([label, value]) => (
           <div key={label} className="min-w-0 space-y-0.5">
             <dt className="text-muted-foreground">{label}</dt>
