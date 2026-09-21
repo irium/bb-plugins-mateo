@@ -249,12 +249,23 @@ describe("project thread groups", () => {
     );
   });
 
-  it("promotes a child when its parent is not visible", () => {
+  // A root is filed under its OWN project, so promotion also decides where the
+  // group is drawn — this is the fallback that hands a service child back to
+  // its own repository's group when the umbrella parent is parked.
+  it("promotes a child when its parent is not visible, into its own project", () => {
     const groups = groupThreadsByProject(
-      [thread({ id: "child", parentThreadId: "parked" })],
-      [project("proj_1", "Project")],
+      [thread({ id: "child", projectId: "svc", parentThreadId: "parked" })],
+      [project("proj_1", "Project"), project("svc", "Service")],
     );
-    assert.equal(groups[0]?.families[0]?.root.id, "child");
+    // proj_1 holds no threads at all, so it is listed as an empty launcher.
+    const filed = groups.filter((group) => group.families.length > 0);
+    assert.equal(filed.length, 1);
+    assert.equal(filed[0]?.project.id, "svc");
+    assert.equal(filed[0]?.families[0]?.root.id, "child");
+    assert.deepEqual(
+      groups.filter((group) => group.families.length === 0).map((group) => group.project.id),
+      ["proj_1"],
+    );
   });
 
   it("omits projects with no visible threads", () => {
@@ -329,6 +340,169 @@ describe("project thread groups", () => {
     assert.deepEqual(searchProjectThreadGroups(groups, " STORE "), []);
     assert.deepEqual(searchProjectThreadGroups(groups, "missing"), []);
     assert.deepEqual(searchProjectThreadGroups(groups, "   "), []);
+  });
+});
+
+/**
+ * The working shape these cover: one ticket is a parent thread in an umbrella
+ * project plus a child per service repository, each child in that repository's
+ * own bb project. bb files them all under the root's project
+ * (`createSidebarProjectIdResolver`), and these mirror its tests.
+ */
+describe("cross-project families", () => {
+  it("files a child from another project under its root ancestor's project", () => {
+    const groups = groupThreadsByProject(
+      [
+        thread({ id: "root", projectId: "umbrella", createdAt: 10 }),
+        thread({
+          id: "child",
+          projectId: "svc_a",
+          parentThreadId: "root",
+          createdAt: 20,
+        }),
+        thread({
+          id: "grandchild",
+          projectId: "svc_b",
+          parentThreadId: "child",
+          createdAt: 30,
+        }),
+      ],
+      [
+        project("umbrella", "Umbrella"),
+        project("svc_a", "Gateway"),
+        project("svc_b", "Billing"),
+      ],
+    );
+
+    assert.deepEqual(
+      groups.map((group) => group.project.id),
+      ["umbrella"],
+    );
+    assert.equal(groups[0]?.families.length, 1);
+    assert.equal(groups[0]?.families[0]?.root.id, "root");
+    assert.deepEqual(
+      groups[0]?.families[0]?.children.map((child) => child.id),
+      ["child", "grandchild"],
+    );
+  });
+
+  // The shape that made this worth fixing: a dozen service children used to
+  // become a dozen sidebar groups.
+  it("keeps a fan of service children in one family", () => {
+    const groups = groupThreadsByProject(
+      [
+        thread({ id: "root", projectId: "umbrella", createdAt: 10 }),
+        thread({
+          id: "gateway",
+          projectId: "svc_a",
+          parentThreadId: "root",
+          createdAt: 20,
+        }),
+        thread({
+          id: "billing",
+          projectId: "svc_b",
+          parentThreadId: "root",
+          createdAt: 30,
+        }),
+      ],
+      [
+        project("umbrella", "Umbrella"),
+        project("svc_a", "Gateway"),
+        project("svc_b", "Billing"),
+      ],
+    );
+
+    assert.equal(groups.length, 1);
+    assert.equal(groups[0]?.families.length, 1);
+    assert.deepEqual(
+      groups[0]?.families[0]?.children.map((child) => child.id),
+      ["gateway", "billing"],
+    );
+  });
+
+  // A service project earns a group only through its own root threads. This is
+  // the effect that makes the sidebar stop listing a repository per ticket.
+  it("draws no group for a project that only holds children", () => {
+    const groups = groupThreadsByProject(
+      [
+        thread({ id: "root", projectId: "umbrella" }),
+        thread({ id: "child", projectId: "svc_a", parentThreadId: "root" }),
+        thread({ id: "standalone", projectId: "svc_b" }),
+      ],
+      [
+        project("umbrella", "Umbrella"),
+        project("svc_a", "Gateway"),
+        project("svc_b", "Billing"),
+      ],
+    );
+
+    assert.deepEqual(
+      groups.map((group) => group.project.id),
+      ["umbrella", "svc_b"],
+    );
+  });
+
+  // The whole family rides along, not just the thread that was looked up.
+  it("files the family under Other project when the root's project is unknown", () => {
+    const groups = groupThreadsByProject(
+      [
+        thread({ id: "root", projectId: "gone" }),
+        thread({ id: "child", projectId: "svc_a", parentThreadId: "root" }),
+      ],
+      [project("svc_a", "Gateway")],
+    );
+
+    assert.equal(groups.length, 1);
+    assert.equal(groups[0]?.project.name, "Other project");
+    assert.deepEqual(
+      groups[0]?.families[0]?.children.map((child) => child.id),
+      ["child"],
+    );
+  });
+
+  it("stops at a cycle instead of looping", () => {
+    const groups = groupThreadsByProject(
+      [
+        thread({ id: "left", projectId: "proj_a", parentThreadId: "right" }),
+        thread({ id: "right", projectId: "proj_b", parentThreadId: "left" }),
+      ],
+      [project("proj_a", "A"), project("proj_b", "B")],
+    );
+
+    // bb resolves a cycle to the last thread reached before the loop closes,
+    // and the walk starts at the first thread in the list. The contract is
+    // termination and a single answer per input, not which member wins.
+    assert.deepEqual(
+      groups.map((group) => group.project.id),
+      ["proj_b"],
+    );
+    assert.equal(groups[0]?.families[0]?.root.id, "right");
+    assert.deepEqual(
+      groups[0]?.families[0]?.children.map((child) => child.id),
+      ["left"],
+    );
+  });
+
+  // Siblings share one ancestor walk. Nothing observable depends on the cache
+  // except that a deep chain does not re-walk per member, so this stands in
+  // for it: every member of a long chain lands in the same family.
+  it("resolves a long chain consistently for every member", () => {
+    const chain = Array.from({ length: 30 }, (_, index) =>
+      thread({
+        id: `thr_${index}`,
+        projectId: index === 0 ? "umbrella" : `svc_${index}`,
+        parentThreadId: index === 0 ? null : `thr_${index - 1}`,
+        createdAt: index,
+      }),
+    );
+    const groups = groupThreadsByProject(chain, [
+      project("umbrella", "Umbrella"),
+    ]);
+
+    assert.equal(groups.length, 1);
+    assert.equal(groups[0]?.project.id, "umbrella");
+    assert.equal(groups[0]?.families.length, 1);
+    assert.equal(groups[0]?.families[0]?.children.length, 29);
   });
 });
 

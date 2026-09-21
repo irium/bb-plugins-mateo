@@ -5,7 +5,11 @@ import type {
 
 export interface ThreadFamily {
   root: PluginSidebarThread;
-  /** Every visible descendant, oldest first, flattened for the compact tree. */
+  /**
+   * Every visible descendant, oldest first, flattened for the compact tree.
+   * A descendant may belong to a different project than the root; it is drawn
+   * here regardless, under the root's group.
+   */
   children: PluginSidebarThread[];
 }
 
@@ -84,8 +88,21 @@ export function filterByProject(
  * project, then root thread. Descendants stay attached to their oldest visible
  * ancestor and are flattened into one compact agent list.
  *
+ * A thread is filed under the project of its ROOT ANCESTOR, not its own. One
+ * ticket is routinely a parent thread in an umbrella project plus a child per
+ * service repository, each child living in that repository's own bb project;
+ * filing every child by its own project scatters that single family across a
+ * dozen sidebar groups. This is bb's own rule — `createSidebarProjectIdResolver`
+ * in `@bb/client-core` — and matching it is not only about where a row is drawn:
+ * the family built here is what the card's status badge, the child count, and
+ * the bulk-delete guards all read, so a family missing its cross-project
+ * children under-reports to every one of them.
+ *
  * A parent that is not in `threads` (parked, archived, filtered, or deleted)
- * cannot own a visible row, so its child becomes a root instead of vanishing.
+ * cannot own a visible row, so its child becomes a root instead of vanishing —
+ * and a root is filed under its OWN project. Parking a parent therefore hands
+ * its children back to their own groups rather than stranding them.
+ *
  * Project order comes from bb; roots keep the inbox's static creation order,
  * with the user's pinned roots first.
  */
@@ -97,32 +114,36 @@ export function groupThreadsByProject(
   const projectOrder = new Map(
     projects.map((project, index) => [project.id, index]),
   );
-  const threadsByProject = new Map<string, PluginSidebarThread[]>();
 
+  // One index over the WHOLE list, before anything is split by project: a
+  // parent in another project has to be reachable, and an index per bucket
+  // cannot see it.
+  const threadById = new Map(threads.map((thread) => [thread.id, thread]));
+  const rootOf = createVisibleRootResolver(threadById);
+
+  const familyByRootId = new Map<string, ThreadFamily>();
   for (const thread of threads) {
-    const bucket = threadsByProject.get(thread.projectId) ?? [];
-    bucket.push(thread);
-    threadsByProject.set(thread.projectId, bucket);
+    const root = rootOf(thread);
+    let family = familyByRootId.get(root.id);
+    if (family === undefined) {
+      family = { root, children: [] };
+      familyByRootId.set(root.id, family);
+    }
+    if (thread.id !== root.id) family.children.push(thread);
+  }
+
+  // Families are whole before they are bucketed, and the bucket is the root's
+  // project. Doing it the other way — bucket first, resolve inside — is what
+  // used to break a cross-project family apart.
+  const familiesByProject = new Map<string, ThreadFamily[]>();
+  for (const family of familyByRootId.values()) {
+    const bucket = familiesByProject.get(family.root.projectId) ?? [];
+    bucket.push(family);
+    familiesByProject.set(family.root.projectId, bucket);
   }
 
   const groups: ProjectThreadGroup[] = [];
-  for (const [projectId, projectThreads] of threadsByProject) {
-    const threadById = new Map(
-      projectThreads.map((thread) => [thread.id, thread]),
-    );
-    const familyByRootId = new Map<string, ThreadFamily>();
-
-    for (const thread of projectThreads) {
-      const root = visibleRootOf(thread, threadById);
-      let family = familyByRootId.get(root.id);
-      if (family === undefined) {
-        family = { root, children: [] };
-        familyByRootId.set(root.id, family);
-      }
-      if (thread.id !== root.id) family.children.push(thread);
-    }
-
-    const families = [...familyByRootId.values()];
+  for (const [projectId, families] of familiesByProject) {
     for (const family of families) {
       family.children.sort(
         (left, right) =>
@@ -148,6 +169,21 @@ export function groupThreadsByProject(
         } satisfies PluginSidebarProject),
       families,
     });
+  }
+
+  // A project is a place work happens, not only a container for work that
+  // already exists. Emitting every project keeps a project with no threads
+  // reachable and startable from the sidebar, instead of hiding it until its
+  // first thread arrives. Its header still renders the family count and the
+  // "New thread in ..." action, so an empty group is a launcher, not a stub.
+  // Only a project with no threads of its own is listed empty. A project
+  // whose threads all hang off another project's root stays out: listing
+  // it would bring back the group-per-service sprawl that filing children
+  // under their root exists to remove.
+  const projectsWithThreads = new Set(threads.map((thread) => thread.projectId));
+  for (const project of projects) {
+    if (projectsWithThreads.has(project.id)) continue;
+    groups.push({ project, families: [] });
   }
 
   return groups.sort((left, right) => {
@@ -192,25 +228,57 @@ export function searchProjectThreadGroups(
   });
 }
 
-function visibleRootOf(
-  thread: PluginSidebarThread,
+/**
+ * The oldest ancestor of a thread that the list still shows, memoized across
+ * the whole grouping pass.
+ *
+ * The walk stops at the first parent the index cannot resolve — parked,
+ * archived, filtered, or deleted — and the thread standing there is the root.
+ * It does NOT stop at a project boundary: crossing one is the normal case for
+ * a child spawned into a service repository, and stopping there is what used
+ * to strand it in a group of its own.
+ *
+ * Every thread on the chain is recorded, not just the one asked for, so a
+ * family of a dozen siblings walks its shared ancestry once rather than once
+ * per sibling. That is bb's own approach (`createSidebarProjectIdResolver`)
+ * and it is here for the same reason: at this size it buys predictability
+ * rather than speed.
+ *
+ * A cycle in `parentThreadId` resolves to the last thread reached before the
+ * loop closes, so which member becomes the root depends on which one is asked
+ * about first. bb behaves the same way. The guarantee is only that the walk
+ * terminates and that one input list always yields one answer — the caller
+ * asks in list order.
+ */
+function createVisibleRootResolver(
   threadById: ReadonlyMap<string, PluginSidebarThread>,
-): PluginSidebarThread {
-  let current = thread;
-  const visited = new Set([thread.id]);
-  while (current.parentThreadId !== null) {
-    const parent = threadById.get(current.parentThreadId);
-    if (
-      parent === undefined ||
-      parent.projectId !== thread.projectId ||
-      visited.has(parent.id)
-    ) {
-      break;
+): (thread: PluginSidebarThread) => PluginSidebarThread {
+  const rootByThreadId = new Map<string, PluginSidebarThread>();
+  return (thread) => {
+    const cached = rootByThreadId.get(thread.id);
+    if (cached !== undefined) return cached;
+
+    const chain: PluginSidebarThread[] = [thread];
+    const visited = new Set([thread.id]);
+    let current = thread;
+    let resolved: PluginSidebarThread | undefined;
+    while (current.parentThreadId !== null) {
+      const parent = threadById.get(current.parentThreadId);
+      if (parent === undefined || visited.has(parent.id)) break;
+      const parentRoot = rootByThreadId.get(parent.id);
+      if (parentRoot !== undefined) {
+        resolved = parentRoot;
+        break;
+      }
+      visited.add(parent.id);
+      chain.push(parent);
+      current = parent;
     }
-    visited.add(parent.id);
-    current = parent;
-  }
-  return current;
+
+    const root = resolved ?? current;
+    for (const member of chain) rootByThreadId.set(member.id, root);
+    return root;
+  };
 }
 
 /**
