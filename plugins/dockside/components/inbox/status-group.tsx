@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { useId } from "react";
 import { ThreadCard } from "@/components/inbox/thread-card";
 import { Icon } from "@/components/ui/icon";
 import type { ProviderGlyphInfo } from "@/components/inbox/provider-glyph";
@@ -27,6 +27,8 @@ export function StatusGroup({
   preferences,
   projectNames,
   projectColorOverrides,
+  collapsed,
+  onSetCollapsed,
 }: {
   group: ThreadSection;
   projectNames: ReadonlyMap<string, string>;
@@ -42,8 +44,10 @@ export function StatusGroup({
   selectionHintId: string;
   onToggleRoot: (threadId: string, intent: RootSelectionIntent) => void;
   preferences: DocksidePreferences;
+  collapsed: boolean;
+  onSetCollapsed: (collapsed: boolean) => void;
 }) {
-  const [expanded, setExpanded] = useState(true);
+  const expanded = !collapsed;
   const listId = useId();
   const effectiveExpanded = forceExpanded || expanded;
   return (
@@ -52,7 +56,7 @@ export function StatusGroup({
         type="button"
         aria-expanded={effectiveExpanded}
         aria-controls={listId}
-        onClick={() => setExpanded((open) => !open)}
+        onClick={() => onSetCollapsed(effectiveExpanded)}
         className="flex h-8 w-full items-center gap-2 rounded-md px-1.5 text-left hover:bg-sidebar-accent/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
       >
         <span

@@ -74,6 +74,14 @@ import {
   writeProjectOrder,
   type ProjectMoveResult,
 } from "@/lib/project-order";
+import {
+  isGroupCollapsed,
+  pruneCollapsedGroups,
+  readCollapsedGroups,
+  setGroupCollapsed,
+  writeCollapsedGroups,
+  type GroupKind,
+} from "@/lib/group-expansion";
 import { familyIsPinned, groupFamiliesByStatus } from "@/lib/status-groups";
 import { groupSidebarFamilies } from "@/lib/sidebar-sections";
 
@@ -142,6 +150,7 @@ export function ThreadInbox({
   const [selectionMode, setSelectionMode] = useState(false);
   const [familyOrder, setFamilyOrder] = useState(readFamilyOrder);
   const [projectOrder, setProjectOrder] = useState(readProjectOrder);
+  const [collapsedGroups, setCollapsedGroups] = useState(readCollapsedGroups);
   const [reorderAnnouncement, setReorderAnnouncement] = useState("");
   const [selectedRootIds, setSelectedRootIds] = useState<Set<string>>(
     () => new Set(),
@@ -483,6 +492,29 @@ export function ThreadInbox({
     setReorderAnnouncement(announcement);
   };
 
+  const changeGroupCollapsed = (
+    kind: GroupKind,
+    id: string,
+    collapsed: boolean,
+  ) => {
+    const toggled = setGroupCollapsed(collapsedGroups, kind, id, collapsed);
+    if (toggled === collapsedGroups) return;
+    // Projects deleted since the last click would otherwise sit in storage
+    // forever and, once the list fills, evict a live project instead. Only the
+    // loaded host list can be trusted to say what still exists, and a rendered
+    // group counts too: a thread whose project the host does not know still
+    // gets a group of its own.
+    const next =
+      status === "ready"
+        ? pruneCollapsedGroups(toggled, [
+            ...projects.map((project) => project.id),
+            ...unfilteredProjectGroups.map((group) => group.project.id),
+          ])
+        : toggled;
+    writeCollapsedGroups(next);
+    setCollapsedGroups(next);
+  };
+
   const announceRejectedProjectMove = (result: ProjectMoveResult) => {
     if (result.ok) return;
     const messages: Record<Exclude<ProjectMoveResult, { ok: true }>["reason"], string> = {
@@ -806,6 +838,10 @@ export function ThreadInbox({
                     preferences={preferences}
                     projectNames={projectNames}
                     projectColorOverrides={projectColorOverrides}
+                    collapsed={isGroupCollapsed(collapsedGroups, "status", group.kind)}
+                    onSetCollapsed={(collapsed) =>
+                      changeGroupCollapsed("status", group.kind, collapsed)
+                    }
                   />
                 ))}
             {showProjectGroups ? projectGroups
@@ -835,6 +871,10 @@ export function ThreadInbox({
                 onProjectKeyboardMove={reorderProjectByKeyboard}
                 preferences={preferences}
                 projectColorOverrides={projectColorOverrides}
+                collapsed={isGroupCollapsed(collapsedGroups, "project", group.project.id)}
+                onSetCollapsed={(collapsed) =>
+                  changeGroupCollapsed("project", group.project.id, collapsed)
+                }
               />
             )) : null}
             {showParkedShelves ? (
