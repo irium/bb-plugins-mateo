@@ -17,6 +17,7 @@ import {
   projectCredentialsInteractionResponseSchema,
   projectSourceConfigSchema,
   sourceName,
+  jiraDeploymentSchema,
   workSourceSchema,
   workStatusOptionSchema,
   taskboardRpcContract,
@@ -73,6 +74,7 @@ const DEFAULT_PROJECT_CONFIG = {
   source: 'github',
   linearTeamKey: '',
   jiraBaseUrl: '',
+  jiraDeployment: 'cloud',
   jiraEmail: '',
   jiraJql:
     'assignee = currentUser() AND resolution = Unresolved ORDER BY updated DESC'
@@ -155,6 +157,7 @@ interface ParsedCliArguments {
   query: string | undefined;
   linearTeam: string | undefined;
   jiraUrl: string | undefined;
+  jiraDeployment: string | undefined;
   jiraEmail: string | undefined;
   jiraJql: string | undefined;
   statusId: string | undefined;
@@ -188,6 +191,7 @@ const CLI_OPTIONS_BY_COMMAND = new Map<string, ReadonlySet<string>>([
       '--source',
       '--linear-team',
       '--jira-url',
+      '--jira-deployment',
       '--jira-email',
       '--jira-jql',
       '--json'
@@ -211,6 +215,7 @@ export function parseTaskboardCliArguments(
   let query: string | undefined;
   let linearTeam: string | undefined;
   let jiraUrl: string | undefined;
+  let jiraDeployment: string | undefined;
   let jiraEmail: string | undefined;
   let jiraJql: string | undefined;
   let statusId: string | undefined;
@@ -228,6 +233,7 @@ export function parseTaskboardCliArguments(
         ![
           '--linear-team',
           '--jira-url',
+          '--jira-deployment',
           '--jira-email',
           '--query'
         ].includes(flag))
@@ -264,6 +270,9 @@ export function parseTaskboardCliArguments(
       index += 1;
     } else if (argument === '--jira-url') {
       jiraUrl = valueAfter(argument, index);
+      index += 1;
+    } else if (argument === '--jira-deployment') {
+      jiraDeployment = valueAfter(argument, index);
       index += 1;
     } else if (argument === '--jira-email') {
       jiraEmail = valueAfter(argument, index);
@@ -305,6 +314,7 @@ export function parseTaskboardCliArguments(
     query,
     linearTeam,
     jiraUrl,
+    jiraDeployment,
     jiraEmail,
     jiraJql,
     statusId,
@@ -355,6 +365,7 @@ function formatProjectConfig(config: ProjectConfigView): string {
     `Linear team\t${config.linearTeamKey || 'not configured'}`,
     `Linear credential\t${config.linearCredentialConfigured ? 'configured' : 'not configured'}`,
     `Jira URL\t${config.jiraBaseUrl || 'not configured'}`,
+    `Jira deployment\t${config.jiraDeployment}`,
     `Jira email\t${config.jiraEmail || 'not configured'}`,
     `Jira credential\t${config.jiraCredentialConfigured ? 'configured' : 'not configured'}`,
     `Jira JQL\t${config.jiraJql}`
@@ -882,6 +893,7 @@ export default async function plugin(bb: BbPluginApi) {
             ? createJiraAdapter({
                 enabled: true,
                 baseUrl: config.jiraBaseUrl,
+                deployment: config.jiraDeployment,
                 email: config.jiraEmail,
                 apiToken: credential,
                 jql: config.jiraJql
@@ -1067,6 +1079,7 @@ export default async function plugin(bb: BbPluginApi) {
     }
     if (
       previous.jiraBaseUrl !== next.jiraBaseUrl ||
+      previous.jiraDeployment !== next.jiraDeployment ||
       previous.jiraEmail !== next.jiraEmail ||
       previous.jiraJql !== next.jiraJql ||
       next.jiraCredential.operation !== 'keep'
@@ -1096,6 +1109,7 @@ export default async function plugin(bb: BbPluginApi) {
       left.source === right.source &&
       left.linearTeamKey === right.linearTeamKey &&
       left.jiraBaseUrl === right.jiraBaseUrl &&
+      left.jiraDeployment === right.jiraDeployment &&
       left.jiraEmail === right.jiraEmail &&
       left.jiraJql === right.jiraJql
     );
@@ -1134,6 +1148,7 @@ export default async function plugin(bb: BbPluginApi) {
         }
         const jiraIdentityChanged =
           previous.jiraBaseUrl !== input.jiraBaseUrl ||
+          previous.jiraDeployment !== input.jiraDeployment ||
           previous.jiraEmail !== input.jiraEmail;
         let projectValidated = false;
         if (jiraIdentityChanged && input.jiraCredential.operation === 'keep') {
@@ -1141,7 +1156,7 @@ export default async function plugin(bb: BbPluginApi) {
           projectValidated = true;
           if (await credentials.configured(input.projectId, 'jira')) {
             throw new Error(
-              'Changing the Jira URL or email requires a replacement token or explicit token removal'
+              'Changing the Jira URL, deployment, or email requires a replacement token or explicit token removal'
             );
           }
         }
@@ -1170,6 +1185,7 @@ export default async function plugin(bb: BbPluginApi) {
           source: input.source,
           linearTeamKey: input.linearTeamKey,
           jiraBaseUrl: input.jiraBaseUrl,
+          jiraDeployment: input.jiraDeployment,
           jiraEmail: input.jiraEmail,
           jiraJql: input.jiraJql
         });
@@ -2097,7 +2113,7 @@ export default async function plugin(bb: BbPluginApi) {
         if (command === 'config') {
           if (args.positionals.length > 0) {
             throw new Error(
-              'Usage: bb taskboard config [--project <proj_id>] [--source linear|github|jira] [--linear-team <key>] [--jira-url <url>] [--jira-email <email>] [--jira-jql <text>] [--json]'
+              'Usage: bb taskboard config [--project <proj_id>] [--source linear|github|jira] [--linear-team <key>] [--jira-url <url>] [--jira-deployment cloud|server] [--jira-email <email>] [--jira-jql <text>] [--json]'
             );
           }
           const parsedSource = args.source
@@ -2105,6 +2121,12 @@ export default async function plugin(bb: BbPluginApi) {
             : null;
           if (parsedSource && !parsedSource.success) {
             throw new Error('--source must be linear, github, or jira');
+          }
+          const parsedDeployment = args.jiraDeployment
+            ? jiraDeploymentSchema.safeParse(args.jiraDeployment)
+            : null;
+          if (parsedDeployment && !parsedDeployment.success) {
+            throw new Error('--jira-deployment must be cloud or server');
           }
           if (args.jiraJql !== undefined && !args.jiraJql.trim()) {
             throw new Error('--jira-jql requires a non-empty value');
@@ -2116,6 +2138,7 @@ export default async function plugin(bb: BbPluginApi) {
             parsedSource !== null ||
             args.linearTeam !== undefined ||
             args.jiraUrl !== undefined ||
+            parsedDeployment !== null ||
             args.jiraEmail !== undefined ||
             args.jiraJql !== undefined;
           const config = changed
@@ -2125,6 +2148,8 @@ export default async function plugin(bb: BbPluginApi) {
                   source: parsedSource?.data ?? previous.source,
                   linearTeamKey: args.linearTeam ?? previous.linearTeamKey,
                   jiraBaseUrl: args.jiraUrl ?? previous.jiraBaseUrl,
+                  jiraDeployment:
+                    parsedDeployment?.data ?? previous.jiraDeployment,
                   jiraEmail: args.jiraEmail ?? previous.jiraEmail,
                   jiraJql: args.jiraJql ?? previous.jiraJql,
                   linearCredential: KEEP_SECRET,
@@ -2164,6 +2189,7 @@ export default async function plugin(bb: BbPluginApi) {
                 projectName: project.name,
                 linearTeamKey: previous.linearTeamKey,
                 jiraBaseUrl: previous.jiraBaseUrl,
+                jiraDeployment: previous.jiraDeployment,
                 jiraEmail: previous.jiraEmail,
                 linearCredentialConfigured: previous.linearCredentialConfigured,
                 jiraCredentialConfigured: previous.jiraCredentialConfigured
@@ -2189,6 +2215,7 @@ export default async function plugin(bb: BbPluginApi) {
               source: previous.source,
               linearTeamKey: previous.linearTeamKey,
               jiraBaseUrl: previous.jiraBaseUrl,
+              jiraDeployment: previous.jiraDeployment,
               jiraEmail: previous.jiraEmail,
               jiraJql: previous.jiraJql,
               linearCredential: response.linearCredential,
@@ -2337,7 +2364,10 @@ export default async function plugin(bb: BbPluginApi) {
           const config = store.projectConfig(projectId, DEFAULT_PROJECT_CONFIG);
           return source === 'linear'
             ? Boolean(config.linearTeamKey)
-            : Boolean(config.jiraBaseUrl && config.jiraEmail);
+            : Boolean(
+                config.jiraBaseUrl &&
+                  (config.jiraDeployment === 'server' || config.jiraEmail)
+              );
         })()
       }))
     );
@@ -2371,13 +2401,18 @@ export default async function plugin(bb: BbPluginApi) {
     const projectId = selectedProjectIds[0]!;
     if (source === 'jira') {
       const config = store.projectConfig(projectId, DEFAULT_PROJECT_CONFIG);
-      if (!config.jiraBaseUrl || !config.jiraEmail) {
+      // Server/DC has no email to pair with its PAT, so requiring one here
+      // would leave a complete configuration looking unfinished.
+      const jiraIdentityComplete =
+        config.jiraBaseUrl &&
+        (config.jiraDeployment === 'server' || config.jiraEmail);
+      if (!jiraIdentityComplete) {
         invalidateSource(projectId, source);
         await enqueueMutation(projectId, [source], async () => undefined);
         const result = await credentials.migrateLegacy(source, []);
         if (result.outcome === 'no-eligible-project') {
           bb.log.warn(
-            'Jira legacy credential was preserved because the enabled project needs a Jira URL and email; assign the full credential bundle in Manage'
+            'Jira legacy credential was preserved because the enabled project is missing its Jira URL (and, on Cloud, the account email); assign the full credential bundle in Manage'
           );
         }
         return;

@@ -625,6 +625,7 @@ test('Jira derives native fields from createmeta and forwards selections', async
   const adapter = createJiraAdapter({
     enabled: true,
     baseUrl: 'https://example.atlassian.net',
+    deployment: 'cloud' as const,
     email: 'mateo@example.com',
     apiToken: 'jira-token',
     jql: 'project = ENG'
@@ -776,6 +777,7 @@ test('Jira marks ambiguous create acknowledgement and detail failures uncertain'
   const adapter = createJiraAdapter({
     enabled: true,
     baseUrl: 'https://example.atlassian.net',
+    deployment: 'cloud' as const,
     email: 'mateo@example.com',
     apiToken: 'jira-token',
     jql: 'project = ENG'
@@ -986,6 +988,7 @@ test('Jira paginates create metadata and canonicalizes issue types to native IDs
   const adapter = createJiraAdapter({
     enabled: true,
     baseUrl: 'https://example.atlassian.net',
+    deployment: 'cloud' as const,
     email: 'mateo@example.com',
     apiToken: 'jira-token',
     jql: 'project = ENG'
@@ -1101,6 +1104,7 @@ test('Jira exposes only priorities allowed for the selected project and issue ty
   const adapter = createJiraAdapter({
     enabled: true,
     baseUrl: 'https://example.atlassian.net',
+    deployment: 'cloud' as const,
     email: 'mateo@example.com',
     apiToken: 'jira-token',
     jql: 'project = ENG'

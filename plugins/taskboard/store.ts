@@ -57,6 +57,7 @@ interface ProjectConfigRow {
   source: string;
   linear_team_key: string;
   jira_base_url: string;
+  jira_deployment: string;
   jira_email: string;
   jira_jql: string;
 }
@@ -124,6 +125,7 @@ function configFromRow(row: ProjectConfigRow): ProjectSourceConfig {
     source: row.source,
     linearTeamKey: row.linear_team_key,
     jiraBaseUrl: row.jira_base_url,
+    jiraDeployment: row.jira_deployment,
     jiraEmail: row.jira_email,
     jiraJql: row.jira_jql
   });
@@ -410,6 +412,13 @@ export function createWorkItemStore(bb: BbPluginApi) {
         ON project_filter_presets(
           bb_project_id, position, created_at, id
         );
+    `,
+    `
+      -- Existing rows all predate Server/DC support, so they are Cloud by
+      -- definition; the DEFAULT backfills them without a data migration.
+      ALTER TABLE project_source_config
+        ADD COLUMN jira_deployment TEXT NOT NULL DEFAULT 'cloud'
+        CHECK (jira_deployment IN ('cloud', 'server'));
     `
   ]);
 
@@ -501,6 +510,7 @@ export function createWorkItemStore(bb: BbPluginApi) {
       source,
       linear_team_key,
       jira_base_url,
+      jira_deployment,
       jira_email,
       jira_jql
     FROM project_source_config
@@ -715,12 +725,14 @@ export function createWorkItemStore(bb: BbPluginApi) {
       defaults: ProjectSourceConfigDefaults
     ): ProjectSourceConfig {
       const config = defaultConfig(projectId, defaults);
-      db.prepare<[string, WorkSource, string, string, string, string, string]>(
+      db.prepare<
+        [string, WorkSource, string, string, string, string, string, string]
+      >(
         `
         INSERT INTO project_source_config (
-          bb_project_id, source, linear_team_key, jira_base_url, jira_email,
-          jira_jql, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+          bb_project_id, source, linear_team_key, jira_base_url,
+          jira_deployment, jira_email, jira_jql, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(bb_project_id) DO NOTHING
       `
       ).run(
@@ -728,6 +740,7 @@ export function createWorkItemStore(bb: BbPluginApi) {
         config.source,
         config.linearTeamKey,
         config.jiraBaseUrl,
+        config.jiraDeployment,
         config.jiraEmail,
         config.jiraJql,
         new Date().toISOString()
@@ -739,17 +752,27 @@ export function createWorkItemStore(bb: BbPluginApi) {
       return db.transaction(() => {
         const previous = readProjectConfig.get(config.projectId);
         db.prepare<
-          [string, WorkSource, string, string, string, string, string]
+          [
+            string,
+            WorkSource,
+            string,
+            string,
+            string,
+            string,
+            string,
+            string
+          ]
         >(
           `
           INSERT INTO project_source_config (
-            bb_project_id, source, linear_team_key, jira_base_url, jira_email,
-            jira_jql, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            bb_project_id, source, linear_team_key, jira_base_url,
+            jira_deployment, jira_email, jira_jql, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
           ON CONFLICT(bb_project_id) DO UPDATE SET
             source = excluded.source,
             linear_team_key = excluded.linear_team_key,
             jira_base_url = excluded.jira_base_url,
+            jira_deployment = excluded.jira_deployment,
             jira_email = excluded.jira_email,
             jira_jql = excluded.jira_jql,
             updated_at = excluded.updated_at
@@ -759,6 +782,7 @@ export function createWorkItemStore(bb: BbPluginApi) {
           config.source,
           config.linearTeamKey,
           config.jiraBaseUrl,
+          config.jiraDeployment,
           config.jiraEmail,
           config.jiraJql,
           new Date().toISOString()

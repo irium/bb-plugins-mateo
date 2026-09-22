@@ -12,7 +12,20 @@ import type {
   WorkSourceAdapter
 } from './types.js';
 import { withoutComments } from './types.js';
-import { jiraProjectKeysFromJql } from './jira-scope.js';
+import { jiraProjectKeysFromJql, jqlWithoutOrderBy } from './jira-scope.js';
+import type { JiraDeployment } from '../credential-contract.js';
+
+const CLOUD_API_BASE = '/rest/api/3';
+const SERVER_API_BASE = '/rest/api/2';
+
+/**
+ * Jira documents ids as strings, but Server/DC serializes some of them
+ * (transition ids in particular) as JSON numbers depending on the version.
+ * Accept both and normalize to the string form the rest of the adapter uses.
+ */
+const jiraIdSchema = z
+  .union([z.string().min(1), z.number().int().nonnegative()])
+  .transform(value => String(value));
 
 const jiraIssueSchema = z
   .object({
@@ -25,21 +38,25 @@ const jiraIssueSchema = z
         updated: z.string(),
         status: z
           .object({
-            id: z.string().min(1),
+            id: jiraIdSchema,
             name: z.string(),
             statusCategory: z.object({ key: z.string() }).passthrough()
           })
           .passthrough(),
-        priority: z.object({ name: z.string() }).passthrough().nullable(),
+        priority: z.object({ name: z.string() }).passthrough().nullish(),
         assignee: z
           .object({
+            // Cloud identifies users by accountId; Server/DC by name (login)
+            // with key as the immutable handle. Exactly one family is present.
             accountId: z.string().min(1).optional(),
+            name: z.string().min(1).optional(),
+            key: z.string().min(1).optional(),
             displayName: z.string()
           })
           .passthrough()
-          .nullable(),
+          .nullish(),
         project: z.object({ key: z.string(), name: z.string() }).passthrough(),
-        labels: z.array(z.string()),
+        labels: z.array(z.string()).default([]),
         comment: z
           .object({
             comments: z.array(
@@ -59,37 +76,43 @@ const jiraIssueSchema = z
   })
   .passthrough();
 
-const jiraSearchPageSchema = z
-  .object({
-    issues: z.array(jiraIssueSchema),
-    nextPageToken: z.string().nullable().optional()
-  })
+/** Cloud: POST /search/jql, opaque forward-only cursor, no total. */
+const jiraSearchPageSchema = <Item extends z.ZodTypeAny>(item: Item) =>
+  z
+    .object({
+      issues: z.array(item),
+      nextPageToken: z.string().nullable().optional()
+    })
+    .passthrough();
+
+/** Server/DC: POST /search, classic startAt/total offset paging. */
+const jiraServerSearchPageSchema = <Item extends z.ZodTypeAny>(item: Item) =>
+  z
+    .object({
+      startAt: z.number().int().nonnegative(),
+      maxResults: z.number().int().positive(),
+      total: z.number().int().nonnegative(),
+      issues: z.array(item)
+    })
+    .passthrough();
+
+/** Just enough of an issue to confirm identity in a scope check. */
+const jiraIssueIdentitySchema = z
+  .object({ id: z.string().min(1), key: z.string().min(1) })
   .passthrough();
 
-const jiraJqlMatchSchema = z
-  .object({
-    matches: z
-      .array(
-        z
-          .object({
-            matchedIssues: z.array(z.number().int().positive()),
-            errors: z.array(z.string())
-          })
-          .passthrough()
-      )
-      .length(1)
-  })
-  .passthrough();
+/** Guards JQL interpolation; also what Jira itself accepts as an issue key. */
+const JIRA_ISSUE_KEY = /^[A-Z][A-Z0-9_]*-[1-9]\d*$/u;
 
 const jiraTransitionsSchema = z
   .object({
     transitions: z.array(
       z
         .object({
-          id: z.string().min(1),
+          id: jiraIdSchema,
           to: z
             .object({
-              id: z.string().min(1),
+              id: jiraIdSchema,
               name: z.string().min(1),
               statusCategory: z.object({ key: z.string() }).passthrough()
             })
@@ -108,46 +131,159 @@ const jiraCreatedIssueSchema = z
   })
   .passthrough();
 
+const jiraCreateIssueTypeSchema = z
+  .object({
+    id: z.string().min(1),
+    name: z.string().min(1),
+    subtask: z.boolean().default(false)
+  })
+  .passthrough();
+
+/**
+ * The paginated createmeta endpoints exist on both deployments but name their
+ * page differently: Cloud returns `issueTypes` / `fields`, while Server/DC
+ * (verified on 8.20) returns the same rows under the generic `values` key.
+ * Accepting only the Cloud name turns a working endpoint into a parse error,
+ * which no status-code fallback would catch.
+ */
 const jiraCreateIssueTypesSchema = z
   .object({
     startAt: z.number().int().nonnegative(),
     maxResults: z.number().int().positive(),
     total: z.number().int().nonnegative(),
-    issueTypes: z.array(
-      z
-        .object({
-          id: z.string().min(1),
-          name: z.string().min(1),
-          subtask: z.boolean().default(false)
-        })
-        .passthrough()
-    )
+    isLast: z.boolean().optional(),
+    issueTypes: z.array(jiraCreateIssueTypeSchema).optional(),
+    values: z.array(jiraCreateIssueTypeSchema).optional()
+  })
+  .passthrough()
+  .refine(page => page.issueTypes !== undefined || page.values !== undefined, {
+    message: 'Jira createmeta page contained no issue types'
+  })
+  .transform(page => ({
+    ...page,
+    issueTypes: page.issueTypes ?? page.values ?? []
+  }));
+
+const jiraCreateFieldSchema = z
+  .object({
+    fieldId: z.string().min(1),
+    required: z.boolean().optional(),
+    allowedValues: z.array(z.unknown()).optional()
   })
   .passthrough();
 
+/** Same Cloud `fields` vs Server/DC `values` split as the issue-type page. */
 const jiraCreateFieldsSchema = z
   .object({
     startAt: z.number().int().nonnegative(),
     maxResults: z.number().int().positive(),
     total: z.number().int().nonnegative(),
-    fields: z.array(
+    isLast: z.boolean().optional(),
+    fields: z.array(jiraCreateFieldSchema).optional(),
+    values: z.array(jiraCreateFieldSchema).optional()
+  })
+  .passthrough()
+  .refine(page => page.fields !== undefined || page.values !== undefined, {
+    message: 'Jira createmeta page contained no fields'
+  })
+  .transform(page => ({ ...page, fields: page.fields ?? page.values ?? [] }));
+
+/**
+ * The pre-9.x Server/DC createmeta shape, still the only one on older Data
+ * Center releases: a single unpaginated document keyed by project, with each
+ * issue type's fields as an object rather than a list.
+ */
+const jiraLegacyCreateMetaSchema = z
+  .object({
+    projects: z.array(
       z
         .object({
-          fieldId: z.string().min(1),
-          allowedValues: z.array(z.unknown()).optional()
+          key: z.string().min(1),
+          issuetypes: z.array(
+            z
+              .object({
+                id: z.string().min(1),
+                name: z.string().min(1),
+                subtask: z.boolean().default(false),
+                fields: z
+                  .record(
+                    z.string(),
+                    z
+                      .object({
+                        required: z.boolean().optional(),
+                        allowedValues: z.array(z.unknown()).optional()
+                      })
+                      .passthrough()
+                  )
+                  .default({})
+              })
+              .passthrough()
+          )
         })
         .passthrough()
     )
   })
   .passthrough();
 
+interface JiraCreateMetaField {
+  fieldId: string;
+  required: boolean;
+  allowedValues?: unknown[];
+}
+
+interface JiraCreateMetaIssueType {
+  id: string;
+  name: string;
+  subtask: boolean;
+}
+
+function isNotFound(error: unknown): boolean {
+  return error instanceof JiraHttpError && error.status === 404;
+}
+
+/** The identity of the caller, used to fill a required reporter. */
+const jiraMyselfSchema = z
+  .object({
+    accountId: z.string().min(1).optional(),
+    name: z.string().min(1).optional(),
+    key: z.string().min(1).optional()
+  })
+  .passthrough();
+
 const jiraAssignableUserSchema = z
   .object({
-    accountId: z.string().min(1),
+    accountId: z.string().min(1).optional(),
+    name: z.string().min(1).optional(),
+    key: z.string().min(1).optional(),
     displayName: z.string().min(1),
     active: z.boolean().optional()
   })
   .passthrough();
+
+/**
+ * The identifier to send back in a user field, and to match a created issue's
+ * assignee against. Cloud uses accountId; Server/DC accepts the login `name`
+ * (its `key` is an internal handle that user fields reject), so a Server user
+ * without a name is simply not offered.
+ */
+function userIdentity(
+  user: { accountId?: string; name?: string },
+  deployment: JiraDeployment
+): string | null {
+  return deployment === 'cloud'
+    ? (user.accountId ?? null)
+    : (user.name ?? null);
+}
+
+/** The JSON shape a user field expects for the given deployment. */
+function userFieldValue(
+  identity: string,
+  deployment: JiraDeployment
+): Record<string, string> {
+  return deployment === 'cloud'
+    ? { accountId: identity }
+    : { name: identity };
+}
 const jiraAssignableUsersSchema = z.array(jiraAssignableUserSchema);
 
 const jiraLabelsSchema = z
@@ -157,6 +293,15 @@ const jiraLabelsSchema = z
     total: z.number().int().nonnegative(),
     isLast: z.boolean(),
     values: z.array(z.string().min(1))
+  })
+  .passthrough();
+
+/** Server/DC label source: /label is absent, autocomplete suggestions are not. */
+const jiraLabelSuggestionsSchema = z
+  .object({
+    results: z.array(
+      z.object({ value: z.string().min(1) }).passthrough()
+    )
   })
   .passthrough();
 
@@ -247,46 +392,86 @@ function toItem(
   };
 }
 
+/**
+ * Mirrors jiraBaseUrlSchema in credential-contract.ts: any HTTPS origin, with
+ * a non-standard port and context path preserved (self-hosted Data Center is
+ * routinely deployed as https://jira.example.com:8443/jira). Returns '' when
+ * the value is unusable so the adapter reports itself unconfigured instead of
+ * issuing a request somewhere unintended.
+ *
+ * Whether the host is allowed to be non-Atlassian is a deployment question and
+ * is validated at config-save time, not here.
+ */
 function normalizeBaseUrl(value: string): string {
   const trimmed = value.trim();
   if (!trimmed) return '';
   try {
     const parsed = new URL(trimmed);
-    const hasExplicitPort = /^https:\/\/[^/?#]+:\d+(?:[/?#]|$)/iu.test(trimmed);
     if (
       parsed.protocol !== 'https:' ||
-      !(
-        parsed.hostname === 'atlassian.net' ||
-        parsed.hostname.endsWith('.atlassian.net')
-      ) ||
       parsed.username ||
       parsed.password ||
-      hasExplicitPort ||
       parsed.search ||
-      parsed.hash ||
-      parsed.pathname !== '/'
+      parsed.hash
     ) {
       return '';
     }
-    return parsed.origin;
+    const contextPath = parsed.pathname.replace(/\/+$/u, '');
+    if (contextPath.includes('..')) return '';
+    return `${parsed.origin}${contextPath}`;
   } catch {
     return '';
   }
 }
 
+interface JiraAuth {
+  baseUrl: string;
+  apiBase: string;
+  deployment: JiraDeployment;
+  email: string;
+  apiToken: string;
+}
+
+/**
+ * Cloud mints API tokens at id.atlassian.com and expects them as Basic
+ * {email}:{token}. Server/DC issues Personal Access Tokens, which are sent
+ * as a bearer credential and carry their own identity -- there is no email to
+ * pair them with.
+ */
+function authorizationHeader(auth: JiraAuth): string {
+  if (auth.deployment === 'server') return `Bearer ${auth.apiToken}`;
+  const basic = Buffer.from(`${auth.email}:${auth.apiToken}`).toString(
+    'base64'
+  );
+  return `Basic ${basic}`;
+}
+
+/**
+ * Issues a request against an API path relative to the deployment's REST base
+ * (`/rest/api/3` on Cloud, `/rest/api/2` on Server/DC).
+ *
+ * Redirects are refused rather than followed: an authenticated Jira REST call
+ * has no legitimate reason to redirect, and a self-hosted instance behind SSO
+ * answers an unauthenticated call with a 302 to a login page, which would
+ * otherwise be parsed as a successful but nonsensical response.
+ */
 async function jiraRequest(
-  options: { baseUrl: string; email: string; apiToken: string },
+  auth: JiraAuth,
   path: string,
   init?: RequestInit
 ): Promise<unknown> {
   let response: Response;
   try {
-    response = await fetch(`${options.baseUrl}${path}`, {
+    response = await fetch(`${auth.baseUrl}${auth.apiBase}${path}`, {
       ...init,
-      redirect: 'error',
+      // Never follow: a self-hosted Jira behind SSO answers an unauthenticated
+      // REST call with a 302 to /login.jsp. 'manual' (rather than 'error')
+      // still refuses to follow it, but lets the 3xx surface as a diagnosable
+      // status instead of an opaque network failure.
+      redirect: 'manual',
       headers: {
         accept: 'application/json',
-        authorization: `Basic ${Buffer.from(`${options.email}:${options.apiToken}`).toString('base64')}`,
+        authorization: authorizationHeader(auth),
         ...(init?.body === undefined
           ? {}
           : { 'content-type': 'application/json' })
@@ -296,29 +481,162 @@ async function jiraRequest(
   } catch {
     throw new Error('Could not reach Jira');
   }
+  if (response.status >= 300 && response.status < 400) {
+    throw new JiraHttpError(
+      response.status,
+      auth.deployment === 'cloud'
+        ? 'Jira redirected to a sign-in page. A self-hosted site answers this way when Cloud is selected — switch the deployment to Server / Data Center.'
+        : 'Jira redirected to a sign-in page, so the Personal Access Token was not accepted.'
+    );
+  }
   const payload: unknown = await response.json().catch(() => null);
-  if (!response.ok) throw new Error(`Jira returned HTTP ${response.status}`);
+  if (!response.ok) {
+    throw new JiraHttpError(response.status, authHint(auth, response.status));
+  }
   return payload;
+}
+
+/** Carries the status code so callers can branch on 404 for optional endpoints. */
+class JiraHttpError extends Error {
+  readonly status: number;
+
+  constructor(status: number, hint: string) {
+    super(`Jira returned HTTP ${status}${hint ? `. ${hint}` : ''}`);
+    this.name = 'JiraHttpError';
+    this.status = status;
+  }
+}
+
+/**
+ * A 401/403 looks identical on the wire for a rejected Cloud API token and a
+ * rejected Server PAT, but the user's next step differs, so name it.
+ */
+function authHint(auth: JiraAuth, status: number): string {
+  if (status !== 401 && status !== 403) return '';
+  return auth.deployment === 'server'
+    ? 'The Personal Access Token was rejected. Recreate it in Jira under Profile -> Personal Access Tokens and update it in Manage.'
+    : 'The email or API token was rejected. If this site is self-hosted, switch the deployment to Server / Data Center; otherwise create a new token at id.atlassian.com/manage-profile/security/api-tokens.';
 }
 
 export function createJiraAdapter(options: {
   enabled: boolean;
   baseUrl: string;
+  deployment: JiraDeployment;
   email: string;
   apiToken: string | undefined;
   jql: string;
 }): WorkSourceAdapter {
   const rawBaseUrl = options.baseUrl.trim();
   const baseUrl = normalizeBaseUrl(options.baseUrl);
+  const deployment = options.deployment;
+  const isServer = deployment === 'server';
   const email = options.email.trim();
   const apiToken = options.apiToken?.trim() ?? '';
-  const hasCredentials = Boolean(baseUrl && email && apiToken);
+  // Server/DC authenticates with the PAT alone -- requiring an email there
+  // would leave a working configuration permanently reported as incomplete.
+  const hasCredentials = Boolean(
+    baseUrl && apiToken && (isServer || email)
+  );
   const configured = options.enabled && hasCredentials;
-  const auth = {
+  const auth: JiraAuth = {
     baseUrl,
+    apiBase: isServer ? SERVER_API_BASE : CLOUD_API_BASE,
+    deployment,
     email,
     apiToken
   };
+
+  /**
+   * One page of a JQL search, hiding the Cloud/Server pagination split behind
+   * an opaque cursor. Cloud returns a token; for Server the cursor is the next
+   * startAt offset rendered as a string.
+   */
+  async function searchPage<Item extends z.ZodTypeAny>(
+    jql: string,
+    request: { fields: string[]; maxResults: number; cursor: string | null },
+    // Must match the requested field set: parsing a summary-only row with the
+    // full issue schema fails on every field that was not asked for. Passed
+    // explicitly rather than defaulted, because a default referring to Item
+    // makes the parameter self-referential and collapses inference to any.
+    itemSchema: Item
+  ): Promise<{ issues: z.infer<Item>[]; nextCursor: string | null }> {
+    if (!isServer) {
+      const payload = await jiraRequest(auth, '/search/jql', {
+        method: 'POST',
+        body: JSON.stringify({
+          jql,
+          maxResults: request.maxResults,
+          fields: request.fields,
+          ...(request.cursor ? { nextPageToken: request.cursor } : {})
+        })
+      });
+      const page = jiraSearchPageSchema(itemSchema).parse(payload);
+      return {
+        issues: page.issues,
+        nextCursor: page.nextPageToken?.trim() || null
+      };
+    }
+    const startAt = request.cursor ? Number(request.cursor) : 0;
+    if (!Number.isSafeInteger(startAt) || startAt < 0) {
+      throw new Error('Jira returned an invalid pagination offset');
+    }
+    const payload = await jiraRequest(auth, '/search', {
+      method: 'POST',
+      body: JSON.stringify({
+        jql,
+        startAt,
+        maxResults: request.maxResults,
+        fields: request.fields
+      })
+    });
+    const page = jiraServerSearchPageSchema(itemSchema).parse(payload);
+    if (page.startAt !== startAt) {
+      throw new Error('Jira returned an invalid pagination offset');
+    }
+    const nextStart = page.startAt + page.issues.length;
+    const done = page.issues.length === 0 || nextStart >= page.total;
+    return {
+      issues: page.issues,
+      nextCursor: done ? null : String(nextStart)
+    };
+  }
+
+  /**
+   * Confirms the issue is inside the configured JQL by re-running that JQL
+   * narrowed to the single key. Cloud also offers POST /jql/match for this,
+   * but Server/DC support for it varies by version, and this form needs only
+   * the search endpoint both deployments are guaranteed to have.
+   */
+  async function assertInScope(
+    issue: z.infer<typeof jiraIssueSchema>
+  ): Promise<void> {
+    if (!JIRA_ISSUE_KEY.test(issue.key)) {
+      throw new Error(`Jira returned an invalid issue key for ${issue.key}`);
+    }
+    const scopeJql = jqlWithoutOrderBy(options.jql.trim());
+    if (!scopeJql) throw new Error('Jira scope JQL is empty');
+    let page: { issues: { id: string }[]; nextCursor: string | null };
+    try {
+      page = await searchPage(
+        `(${scopeJql}) AND issuekey = ${issue.key}`,
+        { fields: ['summary'], maxResults: 1, cursor: null },
+        jiraIssueIdentitySchema
+      );
+    } catch (error) {
+      // Keep the upstream reason: a bad JQL and a rejected token are both
+      // possible here and need different fixes.
+      throw new Error(
+        `Jira could not verify the configured scope: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    }
+    if (!page.issues.some(match => match.id === issue.id)) {
+      throw new Error(
+        `Jira issue ${issue.key} is outside the configured scope`
+      );
+    }
+  }
 
   async function loadIssue(
     locator: string,
@@ -337,31 +655,13 @@ export function createJiraAdapter(options: {
     ].join(',');
     const payload = await jiraRequest(
       auth,
-      `/rest/api/3/issue/${encodeURIComponent(locator)}?fields=${encodeURIComponent(fields)}`
+      `/issue/${encodeURIComponent(locator)}?fields=${encodeURIComponent(fields)}`
     );
     const issue = jiraIssueSchema.parse(payload);
     if (issue.key !== locator) {
       throw new Error(`Jira returned the wrong issue for ${locator}`);
     }
-    if (!flags.verifyScope) return issue;
-    const issueId = Number(issue.id);
-    if (!Number.isSafeInteger(issueId)) {
-      throw new Error(`Jira returned an invalid issue id for ${locator}`);
-    }
-    const matchPayload = await jiraRequest(auth, '/rest/api/3/jql/match', {
-      method: 'POST',
-      body: JSON.stringify({
-        issueIds: [issueId],
-        jqls: [options.jql.trim()]
-      })
-    });
-    const match = jiraJqlMatchSchema.parse(matchPayload).matches[0];
-    if (!match || match.errors.length > 0) {
-      throw new Error('Jira could not verify the configured scope');
-    }
-    if (!match.matchedIssues.includes(issueId)) {
-      throw new Error(`Jira issue ${locator} is outside the configured scope`);
-    }
+    if (flags.verifyScope) await assertInScope(issue);
     return issue;
   }
 
@@ -375,7 +675,7 @@ export function createJiraAdapter(options: {
     });
     const payload = await jiraRequest(
       auth,
-      `/rest/api/3/issue/${encodeURIComponent(locator)}/transitions`
+      `/issue/${encodeURIComponent(locator)}/transitions`
     );
     const transitions = jiraTransitionsSchema.parse(payload).transitions;
     const available = new Map<
@@ -419,21 +719,62 @@ export function createJiraAdapter(options: {
     return projectKey;
   }
 
-  async function createMetadata(input: ExternalWorkItemCreateMetadataInput) {
-    const projectKey = assertProjectKey(input.destinationId);
-    const issueTypesById = new Map<
+  /**
+   * Loads the whole legacy createmeta document for a project. Data Center
+   * releases before 9.x have no per-issue-type createmeta endpoints, so this
+   * one unpaginated call is the only source of both issue types and fields.
+   * Memoized by the caller so a metadata build fetches it at most once.
+   */
+  async function legacyCreateMeta(projectKey: string): Promise<
+    Map<
       string,
-      z.infer<typeof jiraCreateIssueTypesSchema>['issueTypes'][number]
+      { issueType: JiraCreateMetaIssueType; fields: JiraCreateMetaField[] }
+    >
+  > {
+    const payload = await jiraRequest(
+      auth,
+      `/issue/createmeta?projectKeys=${encodeURIComponent(projectKey)}&expand=projects.issuetypes.fields`
+    );
+    const parsed = jiraLegacyCreateMetaSchema.parse(payload);
+    const project = parsed.projects.find(entry => entry.key === projectKey);
+    const byIssueType = new Map<
+      string,
+      { issueType: JiraCreateMetaIssueType; fields: JiraCreateMetaField[] }
     >();
+    for (const issueType of project?.issuetypes ?? []) {
+      byIssueType.set(issueType.id, {
+        issueType: {
+          id: issueType.id,
+          name: issueType.name,
+          subtask: issueType.subtask
+        },
+        fields: Object.entries(issueType.fields).map(([fieldId, field]) => ({
+          fieldId,
+          required: field.required ?? false,
+          allowedValues: field.allowedValues
+        }))
+      });
+    }
+    return byIssueType;
+  }
+
+  async function modernIssueTypes(
+    projectKey: string
+  ): Promise<JiraCreateMetaIssueType[]> {
+    const issueTypesById = new Map<string, JiraCreateMetaIssueType>();
     let issueTypesStart = 0;
     for (;;) {
       const issueTypesPayload = await jiraRequest(
         auth,
-        `/rest/api/3/issue/createmeta/${encodeURIComponent(projectKey)}/issuetypes?startAt=${issueTypesStart}&maxResults=${JIRA_CREATE_METADATA_PAGE_SIZE}`
+        `/issue/createmeta/${encodeURIComponent(projectKey)}/issuetypes?startAt=${issueTypesStart}&maxResults=${JIRA_CREATE_METADATA_PAGE_SIZE}`
       );
       const page = jiraCreateIssueTypesSchema.parse(issueTypesPayload);
       for (const issueType of page.issueTypes) {
-        issueTypesById.set(issueType.id, issueType);
+        issueTypesById.set(issueType.id, {
+          id: issueType.id,
+          name: issueType.name,
+          subtask: issueType.subtask
+        });
       }
       const nextStart = nextJiraPageStart(
         page,
@@ -443,7 +784,148 @@ export function createJiraAdapter(options: {
       if (nextStart === null) break;
       issueTypesStart = nextStart;
     }
-    const issueTypes = [...issueTypesById.values()].filter(
+    return [...issueTypesById.values()];
+  }
+
+  async function modernCreateFields(
+    projectKey: string,
+    issueTypeId: string
+  ): Promise<JiraCreateMetaField[]> {
+    const fieldsById = new Map<string, JiraCreateMetaField>();
+    let fieldsStart = 0;
+    for (;;) {
+      const fieldsPayload = await jiraRequest(
+        auth,
+        `/issue/createmeta/${encodeURIComponent(projectKey)}/issuetypes/${encodeURIComponent(issueTypeId)}?startAt=${fieldsStart}&maxResults=${JIRA_CREATE_METADATA_PAGE_SIZE}`
+      );
+      const page = jiraCreateFieldsSchema.parse(fieldsPayload);
+      for (const field of page.fields) {
+        fieldsById.set(field.fieldId, {
+          fieldId: field.fieldId,
+          required: field.required ?? false,
+          allowedValues: field.allowedValues
+        });
+      }
+      const nextStart = nextJiraPageStart(
+        page,
+        fieldsStart,
+        page.fields.length
+      );
+      if (nextStart === null) break;
+      fieldsStart = nextStart;
+    }
+    return [...fieldsById.values()];
+  }
+
+  /**
+   * Issue types and create-screen fields, preferring the paginated endpoints
+   * and falling back to the legacy document when a Data Center release does
+   * not expose them. The fallback is memoized so both lookups share one fetch.
+   */
+  function createMetaReader(projectKey: string) {
+    let legacy: Promise<
+      Map<
+        string,
+        { issueType: JiraCreateMetaIssueType; fields: JiraCreateMetaField[] }
+      >
+    > | null = null;
+    const loadLegacy = () => (legacy ??= legacyCreateMeta(projectKey));
+    return {
+      async issueTypes(): Promise<JiraCreateMetaIssueType[]> {
+        try {
+          return await modernIssueTypes(projectKey);
+        } catch (error) {
+          if (!isNotFound(error)) throw error;
+          return [...(await loadLegacy()).values()].map(
+            entry => entry.issueType
+          );
+        }
+      },
+      async fields(issueTypeId: string): Promise<JiraCreateMetaField[]> {
+        try {
+          return await modernCreateFields(projectKey, issueTypeId);
+        } catch (error) {
+          if (!isNotFound(error)) throw error;
+          return (await loadLegacy()).get(issueTypeId)?.fields ?? [];
+        }
+      }
+    };
+  }
+
+  /**
+   * Every label known to the instance, for the create dialog's suggestions.
+   *
+   * Cloud paginates /label. Server/DC has no such endpoint (verified 404 on
+   * 8.20) and exposes the same vocabulary through JQL autocomplete, which
+   * returns the full list in one unpaginated response.
+   */
+  async function loadLabels(): Promise<string[]> {
+    if (isServer) {
+      const payload = await jiraRequest(
+        auth,
+        '/jql/autocompletedata/suggestions?fieldName=labels'
+      );
+      const suggestions = jiraLabelSuggestionsSchema.parse(payload);
+      return [...new Set(suggestions.results.map(result => result.value))];
+    }
+    const labels = new Set<string>();
+    let labelsStart = 0;
+    for (;;) {
+      const payload = await jiraRequest(
+        auth,
+        `/label?startAt=${labelsStart}&maxResults=${JIRA_LABEL_PAGE_SIZE}`
+      );
+      const page = jiraLabelsSchema.parse(payload);
+      for (const label of page.values) labels.add(label);
+      const nextStart = nextJiraPageStart(
+        page,
+        labelsStart,
+        page.values.length
+      );
+      if (nextStart === null) break;
+      labelsStart = nextStart;
+    }
+    return [...labels];
+  }
+
+  /**
+   * The reporter value to send when the create screen requires one, or null
+   * when it does not. Uses the authenticated account, which is the identity
+   * Cloud would have applied implicitly.
+   */
+  async function requiredReporterField(
+    projectKey: string,
+    issueTypeId: string
+  ): Promise<Record<string, string> | null> {
+    const fields = await createMetaReader(projectKey).fields(issueTypeId);
+    const required = fields.some(
+      field => field.fieldId === 'reporter' && field.required
+    );
+    if (!required) return null;
+    const me = jiraMyselfSchema.parse(await jiraRequest(auth, '/myself'));
+    const identity = userIdentity(me, deployment);
+    if (!identity) {
+      throw new Error(
+        'Jira requires a reporter but did not identify the authenticated user'
+      );
+    }
+    return userFieldValue(identity, deployment);
+  }
+
+  function confirmAssignee(
+    assignee: z.infer<typeof jiraIssueSchema>['fields']['assignee']
+  ) {
+    if (!assignee) return { confirmed: true as const, id: null };
+    const identity = userIdentity(assignee, deployment);
+    return identity
+      ? { confirmed: true as const, id: identity }
+      : { confirmed: false as const };
+  }
+
+  async function createMetadata(input: ExternalWorkItemCreateMetadataInput) {
+    const projectKey = assertProjectKey(input.destinationId);
+    const createMeta = createMetaReader(projectKey);
+    const issueTypes = (await createMeta.issueTypes()).filter(
       issueType => !issueType.subtask
     );
     const requestedIssueType = input.issueType?.trim() ?? '';
@@ -462,27 +944,7 @@ export function createJiraAdapter(options: {
     if (!selectedIssueType) {
       throw new Error(`Jira project ${projectKey} has no available issue types`);
     }
-    const fieldsById = new Map<
-      string,
-      z.infer<typeof jiraCreateFieldsSchema>['fields'][number]
-    >();
-    let fieldsStart = 0;
-    for (;;) {
-      const fieldsPayload = await jiraRequest(
-        auth,
-        `/rest/api/3/issue/createmeta/${encodeURIComponent(projectKey)}/issuetypes/${encodeURIComponent(selectedIssueType.id)}?startAt=${fieldsStart}&maxResults=${JIRA_CREATE_METADATA_PAGE_SIZE}`
-      );
-      const page = jiraCreateFieldsSchema.parse(fieldsPayload);
-      for (const field of page.fields) fieldsById.set(field.fieldId, field);
-      const nextStart = nextJiraPageStart(
-        page,
-        fieldsStart,
-        page.fields.length
-      );
-      if (nextStart === null) break;
-      fieldsStart = nextStart;
-    }
-    const fields = [...fieldsById.values()];
+    const fields = await createMeta.fields(selectedIssueType.id);
     const byId = new Map(fields.map(field => [field.fieldId, field]));
     const assigneeField = byId.get('assignee');
     const priorityField = byId.get('priority');
@@ -498,47 +960,26 @@ export function createJiraAdapter(options: {
       assigneeField
         ? jiraRequest(
             auth,
-            `/rest/api/3/user/assignable/search?project=${encodeURIComponent(projectKey)}&startAt=0&maxResults=1000`
+            `/user/assignable/search?project=${encodeURIComponent(projectKey)}&startAt=0&maxResults=1000`
           )
             .then(payload => jiraAssignableUsersSchema.parse(payload))
             .catch(() => [])
         : Promise.resolve([]),
-      byId.has('labels')
-        ? (async () => {
-            const labels = new Set<string>();
-            let labelsStart = 0;
-            for (;;) {
-              const payload = await jiraRequest(
-                auth,
-                `/rest/api/3/label?startAt=${labelsStart}&maxResults=${JIRA_LABEL_PAGE_SIZE}`
-              );
-              const page = jiraLabelsSchema.parse(payload);
-              for (const label of page.values) labels.add(label);
-              const nextStart = nextJiraPageStart(
-                page,
-                labelsStart,
-                page.values.length
-              );
-              if (nextStart === null) break;
-              labelsStart = nextStart;
-            }
-            return [...labels];
-          })().catch(() => [])
-        : Promise.resolve([])
+      byId.has('labels') ? loadLabels().catch(() => []) : Promise.resolve([])
     ]);
     const assignees = [
       ...new Map(
-        [...assigneeAllowed, ...fallbackAssignees].map(user => [
-          user.accountId,
-          user
-        ])
+        [...assigneeAllowed, ...fallbackAssignees].flatMap(user => {
+          const id = userIdentity(user, deployment);
+          return id ? [[id, { id, user }] as const] : [];
+        })
       ).values()
     ];
     return {
       statusOptions: [],
       assigneeOptions: assignees
-        .filter(user => user.active !== false)
-        .map(user => ({ id: user.accountId, label: user.displayName })),
+        .filter(entry => entry.user.active !== false)
+        .map(entry => ({ id: entry.id, label: entry.user.displayName })),
       priorityOptions: priorityAllowed.map(priority => ({
         id: priority.id,
         label: priority.name
@@ -562,21 +1003,28 @@ export function createJiraAdapter(options: {
       !options.enabled
         ? 'Enable Jira for this BB project in Manage.'
         : rawBaseUrl && !baseUrl
-          ? 'Jira Cloud URL must be an HTTPS atlassian.net origin.'
+          ? 'Jira URL must be an HTTPS origin without credentials, query, or fragment.'
           : hasCredentials
             ? null
-            : 'Set the Jira URL, email, and API token for this BB project in Manage.',
+            : isServer
+              ? 'Set the Jira URL and Personal Access Token for this BB project in Manage.'
+              : 'Set the Jira URL, email, and API token for this BB project in Manage.',
     async list() {
       if (!configured) throw new Error('Jira is not configured');
       const issues: z.infer<typeof jiraIssueSchema>[] = [];
-      const seenPageTokens = new Set<string>();
-      let nextPageToken: string | undefined;
+      const seenCursors = new Set<string>();
+      let cursor: string | null = null;
       for (;;) {
-        const payload = await jiraRequest(auth, '/rest/api/3/search/jql', {
-          method: 'POST',
-          body: JSON.stringify({
-            jql: options.jql.trim(),
-            maxResults: 100,
+        // The configured ORDER BY is preserved here: it decides which issues
+        // land in the first pages. Only scope verification has to drop it.
+        // Annotated to break the inference cycle between this closure's
+        // inferred return type and the generic searchPage.
+        const page: {
+          issues: z.infer<typeof jiraIssueSchema>[];
+          nextCursor: string | null;
+        } = await searchPage(
+          options.jql.trim(),
+          {
             fields: [
               'summary',
               'description',
@@ -587,18 +1035,20 @@ export function createJiraAdapter(options: {
               'project',
               'labels'
             ],
-            ...(nextPageToken ? { nextPageToken } : {})
-          })
-        });
-        const page = jiraSearchPageSchema.parse(payload);
+            maxResults: 100,
+            cursor
+          },
+          jiraIssueSchema
+        );
         issues.push(...page.issues);
-        const token = page.nextPageToken?.trim();
-        if (!token) break;
-        if (seenPageTokens.has(token)) {
+        if (!page.nextCursor) break;
+        // A repeated cursor means the server is looping us; stop rather than
+        // paging forever.
+        if (seenCursors.has(page.nextCursor)) {
           throw new Error('Jira returned an invalid pagination token');
         }
-        seenPageTokens.add(token);
-        nextPageToken = token;
+        seenCursors.add(page.nextCursor);
+        cursor = page.nextCursor;
       }
       return issues.map(issue => withoutComments(toItem(baseUrl, issue)));
     },
@@ -633,20 +1083,37 @@ export function createJiraAdapter(options: {
       if (input.issueType === null) {
         throw new Error('Choose a Jira issue type');
       }
+      // Cloud fills reporter from the authenticating token, but Server/DC
+      // create screens routinely mark it required, which rejects the whole
+      // create. Resolve it before the POST: a failure here is a plain error,
+      // whereas a failure inside the POST guard below would be reported as an
+      // issue that may already exist.
+      const reporter = isServer
+        ? await requiredReporterField(projectKey, input.issueType)
+        : null;
       let created: z.infer<typeof jiraCreatedIssueSchema>;
       try {
-        const payload = await jiraRequest(auth, '/rest/api/3/issue', {
+        const payload = await jiraRequest(auth, '/issue', {
           method: 'POST',
           body: JSON.stringify({
             fields: {
               project: { key: projectKey },
               summary: input.title,
               issuetype: { id: input.issueType },
+              ...(reporter ? { reporter } : {}),
               ...(input.description
-                ? { description: jiraDescription(input.description) }
+                ? {
+                    // Cloud's v3 API takes an Atlassian Document Format tree;
+                    // Server/DC's v2 description is plain wiki-markup text.
+                    description: isServer
+                      ? input.description
+                      : jiraDescription(input.description)
+                  }
                 : {}),
               ...(input.assigneeId
-                ? { assignee: { accountId: input.assigneeId } }
+                ? {
+                    assignee: userFieldValue(input.assigneeId, deployment)
+                  }
                 : {}),
               ...(input.priorityId
                 ? { priority: { id: input.priorityId } }
@@ -675,15 +1142,7 @@ export function createJiraAdapter(options: {
         return {
           item: toItem(baseUrl, issue),
           warnings: [],
-          assigneeConfirmation:
-            issue.fields.assignee === null
-              ? { confirmed: true, id: null }
-              : issue.fields.assignee.accountId
-                ? {
-                    confirmed: true,
-                    id: issue.fields.assignee.accountId
-                  }
-                : { confirmed: false }
+          assigneeConfirmation: confirmAssignee(issue.fields.assignee)
         };
       } catch {
         throw new Error(
@@ -704,7 +1163,7 @@ export function createJiraAdapter(options: {
         }
         await jiraRequest(
           auth,
-          `/rest/api/3/issue/${encodeURIComponent(locator)}/transitions`,
+          `/issue/${encodeURIComponent(locator)}/transitions`,
           {
             method: 'POST',
             body: JSON.stringify({ transition: { id: target.transitionId } })

@@ -2,7 +2,9 @@ import { defineRpcContract } from '@get-bb/plugin-sdk';
 import { z } from 'zod';
 import {
   bbProjectIdSchema,
+  isAtlassianCloudHost,
   jiraBaseUrlSchema,
+  jiraDeploymentSchema,
   projectCredentialsInteractionPayloadSchema,
   projectCredentialsInteractionResponseSchema,
   secretMutationSchema
@@ -57,12 +59,15 @@ export type {
 } from './filter-presets.js';
 export {
   bbProjectIdSchema,
+  isAtlassianCloudHost,
   jiraBaseUrlSchema,
+  jiraDeploymentSchema,
   projectCredentialsInteractionPayloadSchema,
   projectCredentialsInteractionResponseSchema,
   secretMutationSchema
 } from './credential-contract.js';
 export type {
+  JiraDeployment,
   ProjectCredentialsInteractionPayload,
   ProjectCredentialsInteractionResponse,
   SecretMutation
@@ -85,6 +90,7 @@ export const projectSourceConfigSchema = z
     source: workSourceSchema,
     linearTeamKey: z.string().trim(),
     jiraBaseUrl: jiraBaseUrlSchema,
+    jiraDeployment: jiraDeploymentSchema,
     jiraEmail: z.string().trim(),
     jiraJql: z.string().trim().min(1)
   })
@@ -112,6 +118,49 @@ export const projectConfigMutationSchema = projectSourceConfigSchema
         code: 'custom',
         path: ['linearTeamKey'],
         message: 'Linear team key is required when Linear is selected'
+      });
+    }
+    if (config.source !== 'jira' || !config.jiraBaseUrl) return;
+    // The host allowlist only makes sense for Cloud. Enforcing it here rather
+    // than in jiraBaseUrlSchema keeps a self-hosted URL valid while still
+    // refusing a Cloud config that points somewhere other than Atlassian.
+    const cloudHost = isAtlassianCloudHost(
+      new URL(config.jiraBaseUrl).hostname
+    );
+    if (config.jiraDeployment === 'cloud') {
+      if (!cloudHost) {
+        context.addIssue({
+          code: 'custom',
+          path: ['jiraBaseUrl'],
+          message:
+            'Jira Cloud requires an atlassian.net site. Choose Server / Data Center for a self-hosted instance.'
+        });
+      }
+      if (!config.jiraEmail) {
+        context.addIssue({
+          code: 'custom',
+          path: ['jiraEmail'],
+          message: 'Jira Cloud requires the account email for its API token'
+        });
+      }
+      return;
+    }
+    // Server/DC authenticates with a bare Personal Access Token, so an email
+    // would be silently unused -- reject it instead of implying it matters.
+    if (config.jiraEmail) {
+      context.addIssue({
+        code: 'custom',
+        path: ['jiraEmail'],
+        message:
+          'Jira Server / Data Center authenticates with a Personal Access Token alone; leave the email empty'
+      });
+    }
+    if (cloudHost) {
+      context.addIssue({
+        code: 'custom',
+        path: ['jiraBaseUrl'],
+        message:
+          'That is an Atlassian Cloud site. Choose Cloud, which authenticates with an email and API token.'
       });
     }
   });

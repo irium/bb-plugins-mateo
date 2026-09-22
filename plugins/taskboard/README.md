@@ -116,8 +116,20 @@ user-wide assigned-issues feed.
 
 ### Jira
 
-Choose Jira, then provide the project's Atlassian Cloud URL, account email, API
-token, and JQL. Only HTTPS `*.atlassian.net` origins are accepted.
+Choose Jira, then pick the deployment.
+
+**Cloud** takes the site URL, the account email, an API token from
+`id.atlassian.com`, and a JQL query. Only HTTPS `*.atlassian.net` origins are
+accepted for this deployment.
+
+**Server / Data Center** takes the site URL, a Personal Access Token created
+from your Jira profile, and a JQL query. There is no email: a PAT carries its
+own identity. A non-standard port and a context path are supported, so
+`https://jira.example.com:8443/jira` is a valid site. The URL must still be
+HTTPS and must not carry credentials, a query, or a fragment.
+
+Changing the site, the deployment, or the email requires replacing or removing
+the stored token, because each of those changes what the credential means.
 
 ![Taskboard across projects](https://raw.githubusercontent.com/MateoCerquetella/bb-plugins/main/docs/media/across-projects.png)
 
