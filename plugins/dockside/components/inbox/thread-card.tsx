@@ -21,6 +21,7 @@ import {
 } from "@/components/inbox/family-status";
 import { familyWaitingForAgents } from "@/lib/attention-state";
 import { familyStatus } from "@/lib/family-status";
+import { familyTreeRows, MAX_INDENTED_DEPTH } from "@/lib/family-tree";
 import { threadDisplayTitle, threadIsWorking } from "@/lib/inbox";
 import { resolveFamilyExpanded } from "@/lib/thread-management";
 import type { RootSelectionIntent } from "@/lib/thread-management";
@@ -453,10 +454,11 @@ export function ThreadCard({
                   : undefined
               }
             >
-              {childThreads.map((child) => (
+              {familyTreeRows(thread.id, childThreads).map(({ thread: child, depth }) => (
                 <ChildThreadRow
                   key={child.id}
                   thread={child}
+                  depth={depth}
                   provider={providerInfoById.get(child.providerId)}
                   isActive={child.id === activeThreadId}
                   onNavigate={onNavigate}
@@ -474,6 +476,7 @@ export function ThreadCard({
 
 function ChildThreadRow({
   thread,
+  depth,
   provider,
   isActive,
   onNavigate,
@@ -481,6 +484,7 @@ function ChildThreadRow({
   preferences,
 }: {
   thread: PluginSidebarThread;
+  depth: number;
   provider?: ProviderGlyphInfo;
   isActive: boolean;
   onNavigate: () => void;
@@ -491,21 +495,30 @@ function ChildThreadRow({
   const { splitProps, layout } = useSidebarThreadSplit(thread.id);
   const status = threadStatus(thread);
   const isWorking = threadIsWorking(thread);
+  // Each level past the first steps in by the trunk's own 12px gutter, and
+  // the connector stretches back to the trunk so the row still reads as
+  // part of this family.
+  const indent = (Math.min(depth, MAX_INDENTED_DEPTH) - 1) * 12;
 
   return (
     <RowContextMenu thread={thread}>
-      <li className="relative list-none py-px">
+      <li
+        data-dockside-child-depth={depth}
+        className="relative list-none py-px"
+        style={indent > 0 ? { marginLeft: indent } : undefined}
+      >
         <span
           aria-hidden
           className={cn(
             "absolute -left-3 top-1/2 h-px w-3 transition-colors",
             !isWorking && "bg-sidebar-border",
           )}
-          style={
-            isWorking
+          style={{
+            ...(indent > 0 ? { left: -(12 + indent), width: 12 + indent } : {}),
+            ...(isWorking
               ? { backgroundColor: "var(--dockside-status-working)" }
-              : undefined
-          }
+              : {}),
+          }}
         />
         <div
           data-dockside-child-row=""
