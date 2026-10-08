@@ -11,6 +11,8 @@ export interface FamilyTreeRow {
   thread: PluginSidebarThread;
   /** 1 for a direct child of the root, 2 for a grandchild, and so on. */
   depth: number;
+  /** Everything drawn under this row, in tree order; empty for a leaf. */
+  descendants: readonly PluginSidebarThread[];
 }
 
 /**
@@ -56,21 +58,47 @@ export function familyTreeRows(
 
   const rows: FamilyTreeRow[] = [];
   const placed = new Set<string>();
-  const visit = (parentId: string, depth: number) => {
+  // Returns what it drew, so each row can carry its own descendants.
+  const place = (kid: PluginSidebarThread, depth: number): PluginSidebarThread[] => {
+    placed.add(kid.id);
+    const row: FamilyTreeRow = { thread: kid, depth, descendants: [] };
+    rows.push(row);
+    const descendants = visit(kid.id, depth + 1);
+    row.descendants = descendants;
+    return [kid, ...descendants];
+  };
+  const visit = (parentId: string, depth: number): PluginSidebarThread[] => {
+    const drawn: PluginSidebarThread[] = [];
     for (const kid of kidsByParent.get(parentId) ?? []) {
       if (placed.has(kid.id)) continue;
-      placed.add(kid.id);
-      rows.push({ thread: kid, depth });
-      visit(kid.id, depth + 1);
+      drawn.push(...place(kid, depth));
     }
+    return drawn;
   };
   visit(rootId, 1);
 
   for (const child of children) {
-    if (placed.has(child.id)) continue;
-    placed.add(child.id);
-    rows.push({ thread: child, depth: 1 });
-    visit(child.id, 2);
+    if (!placed.has(child.id)) place(child, 1);
   }
   return rows;
+}
+
+/**
+ * Drops the rows hidden under folded subtrees. Rows arrive in tree order,
+ * so everything deeper than a folded row, up to the next row at its depth
+ * or shallower, is that row's subtree.
+ */
+export function foldTreeRows(
+  rows: readonly FamilyTreeRow[],
+  isExpanded: (row: FamilyTreeRow) => boolean,
+): FamilyTreeRow[] {
+  const shown: FamilyTreeRow[] = [];
+  let foldedAt: number | null = null;
+  for (const row of rows) {
+    if (foldedAt !== null && row.depth > foldedAt) continue;
+    foldedAt = null;
+    shown.push(row);
+    if (row.descendants.length > 0 && !isExpanded(row)) foldedAt = row.depth;
+  }
+  return shown;
 }

@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { describe, it } from "node:test";
 import type { PluginSidebarThread } from "@bb/plugin-sdk";
-import { familyTreeRows, MAX_INDENTED_DEPTH } from "../lib/family-tree.ts";
+import {
+  familyTreeRows,
+  foldTreeRows,
+  MAX_INDENTED_DEPTH,
+} from "../lib/family-tree.ts";
 
 function thread(
   id: string,
@@ -71,6 +75,52 @@ describe("family tree rows", () => {
   });
 });
 
+describe("folding nested subtrees", () => {
+  const family = [
+    thread("a", "root", 1),
+    thread("b", "root", 2),
+    thread("a1", "a", 3),
+    thread("a1x", "a1", 4),
+    thread("a2", "a", 5),
+  ];
+  const ids = (list: { thread: PluginSidebarThread }[]) =>
+    list.map((row) => row.thread.id);
+
+  it("gives each row everything drawn beneath it", () => {
+    const byId = new Map(
+      familyTreeRows("root", family).map((row) => [
+        row.thread.id,
+        row.descendants.map((descendant) => descendant.id),
+      ]),
+    );
+    assert.deepEqual(byId.get("a"), ["a1", "a1x", "a2"]);
+    assert.deepEqual(byId.get("a1"), ["a1x"]);
+    assert.deepEqual(byId.get("b"), []);
+  });
+
+  it("hides a folded subtree and nothing beside it", () => {
+    const tree = familyTreeRows("root", family);
+    assert.deepEqual(
+      ids(foldTreeRows(tree, (row) => row.thread.id !== "a")),
+      ["a", "b"],
+    );
+    assert.deepEqual(
+      ids(foldTreeRows(tree, (row) => row.thread.id !== "a1")),
+      ["a", "a1", "a2", "b"],
+    );
+    assert.deepEqual(ids(foldTreeRows(tree, () => true)), ["a", "a1", "a1x", "a2", "b"]);
+  });
+
+  it("only asks about rows that have something to fold", () => {
+    const asked: string[] = [];
+    foldTreeRows(familyTreeRows("root", family), (row) => {
+      asked.push(row.thread.id);
+      return true;
+    });
+    assert.deepEqual(asked.sort(), ["a", "a1"]);
+  });
+});
+
 describe("family tree wiring", () => {
   it("draws child rows in tree order with a capped indent", async () => {
     const card = await readFile(
@@ -80,6 +130,14 @@ describe("family tree wiring", () => {
     assert.match(card, /familyTreeRows\(thread\.id, childThreads\)/);
     assert.match(card, /data-dockside-child-depth=\{depth\}/);
     assert.match(card, /Math\.min\(depth, MAX_INDENTED_DEPTH\) - 1\) \* 12/);
+    // Subtrees fold like the family: search, click override, then default.
+    assert.match(card, /foldTreeRows\(treeRows, subtreeExpanded\)/);
+    assert.match(card, /override: subtreeOverrides\.get\(row\.thread\.id\) \?\? null/);
+    assert.match(card, /defaultExpanded: preferences\.defaultChildrenExpanded/);
+    assert.match(card, /<SubtreeToggle/);
+    assert.match(card, /aria-expanded=\{expanded\}/);
+    // A folded subtree still signals work or questions inside it.
+    assert.match(card, /needsAttention && "text-primary"/);
     // The family model stays flat: counts, status and bulk guards still read
     // childThreads directly.
     assert.match(card, /familyStatus\(\[thread, \.\.\.childThreads\], now\)/);

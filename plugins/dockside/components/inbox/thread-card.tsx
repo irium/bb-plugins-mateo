@@ -21,7 +21,12 @@ import {
 } from "@/components/inbox/family-status";
 import { familyWaitingForAgents } from "@/lib/attention-state";
 import { familyStatus } from "@/lib/family-status";
-import { familyTreeRows, MAX_INDENTED_DEPTH } from "@/lib/family-tree";
+import {
+  familyTreeRows,
+  foldTreeRows,
+  MAX_INDENTED_DEPTH,
+  type FamilyTreeRow,
+} from "@/lib/family-tree";
 import { threadDisplayTitle, threadIsWorking } from "@/lib/inbox";
 import { resolveFamilyExpanded } from "@/lib/thread-management";
 import type { RootSelectionIntent } from "@/lib/thread-management";
@@ -97,6 +102,22 @@ export function ThreadCard({
   const [expandedOverride, setExpandedOverride] = useState<boolean | null>(
     null,
   );
+  // A nested subtree folds the way the whole family does: search opens it,
+  // a click overrides it, and otherwise the default child expansion applies.
+  const [subtreeOverrides, setSubtreeOverrides] = useState<
+    ReadonlyMap<string, boolean>
+  >(() => new Map());
+  const treeRows = useMemo(
+    () => familyTreeRows(thread.id, childThreads),
+    [thread.id, childThreads],
+  );
+  const subtreeExpanded = (row: FamilyTreeRow) =>
+    resolveFamilyExpanded({
+      childCount: row.descendants.length,
+      forceExpanded,
+      override: subtreeOverrides.get(row.thread.id) ?? null,
+      defaultExpanded: preferences.defaultChildrenExpanded,
+    });
 
   const familyIsActive =
     thread.id === activeThreadId ||
@@ -454,13 +475,21 @@ export function ThreadCard({
                   : undefined
               }
             >
-              {familyTreeRows(thread.id, childThreads).map(({ thread: child, depth }) => (
+              {foldTreeRows(treeRows, subtreeExpanded).map((row) => (
                 <ChildThreadRow
-                  key={child.id}
-                  thread={child}
-                  depth={depth}
-                  provider={providerInfoById.get(child.providerId)}
-                  isActive={child.id === activeThreadId}
+                  key={row.thread.id}
+                  thread={row.thread}
+                  depth={row.depth}
+                  descendants={row.descendants}
+                  subtreeExpanded={subtreeExpanded(row)}
+                  onToggleSubtree={() => {
+                    const next = !subtreeExpanded(row);
+                    setSubtreeOverrides((current) =>
+                      new Map(current).set(row.thread.id, next),
+                    );
+                  }}
+                  provider={providerInfoById.get(row.thread.providerId)}
+                  isActive={row.thread.id === activeThreadId}
                   onNavigate={onNavigate}
                   now={now}
                   preferences={preferences}
@@ -477,6 +506,9 @@ export function ThreadCard({
 function ChildThreadRow({
   thread,
   depth,
+  descendants,
+  subtreeExpanded,
+  onToggleSubtree,
   provider,
   isActive,
   onNavigate,
@@ -485,6 +517,9 @@ function ChildThreadRow({
 }: {
   thread: PluginSidebarThread;
   depth: number;
+  descendants: readonly PluginSidebarThread[];
+  subtreeExpanded: boolean;
+  onToggleSubtree: () => void;
   provider?: ProviderGlyphInfo;
   isActive: boolean;
   onNavigate: () => void;
@@ -579,10 +614,67 @@ function ChildThreadRow({
               <ThreadLocation thread={thread} />
             </div>
           </div>
+          {descendants.length > 0 ? (
+            <SubtreeToggle
+              title={threadDisplayTitle(thread)}
+              descendants={descendants}
+              expanded={subtreeExpanded}
+              onToggle={onToggleSubtree}
+            />
+          ) : null}
           <ThreadStateGlyph thread={thread} className="relative mt-0.5" />
         </div>
       </li>
     </RowContextMenu>
+  );
+}
+
+function SubtreeToggle({
+  title,
+  descendants,
+  expanded,
+  onToggle,
+}: {
+  title: string;
+  descendants: readonly PluginSidebarThread[];
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  // A folded subtree must not hide that something in it wants attention.
+  const needsAttention = descendants.some(
+    (descendant) =>
+      descendant.hasPendingInteraction ||
+      descendant.isUnread ||
+      threadIsWorking(descendant),
+  );
+  const label = `${expanded ? "Hide" : "Show"} ${descendants.length} nested ${
+    descendants.length === 1 ? "thread" : "threads"
+  } under ${title}`;
+  return (
+    <button
+      type="button"
+      data-dockside-subtree-toggle=""
+      aria-label={label}
+      aria-expanded={expanded}
+      title={label}
+      onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        onToggle();
+      }}
+      className={cn(
+        "relative mt-0.5 flex h-4 shrink-0 items-center gap-0.5 rounded px-0.5 text-2xs font-medium text-muted-foreground",
+        "hover:bg-sidebar-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+        needsAttention && "text-primary",
+      )}
+    >
+      <Icon
+        name="ChevronDown"
+        className={cn("size-3 transition-transform", expanded && "rotate-180")}
+        aria-hidden
+      />
+      <span className="tabular-nums">{descendants.length}</span>
+    </button>
   );
 }
 
