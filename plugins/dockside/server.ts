@@ -36,6 +36,12 @@ import {
   MAX_PROJECT_COLOR_ROWS,
   MAX_PROJECT_ID_LENGTH,
 } from "./lib/project-colors.ts";
+import { createTurnStore, TURN_MIGRATION } from "./lib/turn-store.ts";
+import {
+  TURN_CHANNEL,
+  TURN_SECTION_LIMIT_OPTIONS,
+  TURN_SECTION_VISIBILITY_OPTIONS,
+} from "./lib/turn-sections.ts";
 
 const migrations = [
   `CREATE TABLE IF NOT EXISTS thread_lifecycle (
@@ -49,6 +55,7 @@ const migrations = [
   // archived for good.
   `ALTER TABLE thread_lifecycle ADD COLUMN archived_thread_ids TEXT`,
   PROJECT_COLOR_MIGRATION,
+  TURN_MIGRATION,
 ];
 
 export interface StoredLifecycleRow {
@@ -140,6 +147,18 @@ const selectedThreadIdsSchema = z
     message: "A root thread can be selected only once.",
   });
 export const docksideRpcContract = defineRpcContract({
+  listTurns: {
+    input: z.object({}),
+    output: z.object({
+      turns: z.array(
+        z.object({
+          threadId: z.string(),
+          startedAt: z.number().nullable(),
+          endedAt: z.number().nullable(),
+        }),
+      ),
+    }),
+  },
   listProjectColors: {
     input: z.object({}),
     output: z.object({
@@ -330,11 +349,33 @@ export default function plugin(bb: BbPluginApi) {
       label: "Show relative time",
       default: true,
     },
+    turnSections: {
+      type: "select",
+      label: "Inbox and Working sections",
+      description:
+        "Lists above Workspaces: threads that just finished, and threads running now.",
+      options: [...TURN_SECTION_VISIBILITY_OPTIONS],
+      default: "Shown",
+    },
+    turnSectionLimit: {
+      type: "select",
+      label: "Threads per section",
+      description: "How many of the latest threads Inbox and Working each show.",
+      options: [...TURN_SECTION_LIMIT_OPTIONS],
+      default: "5",
+    },
+    turnSectionChildren: {
+      type: "boolean",
+      label: "Include child threads in Inbox and Working",
+      description: "Also list threads spawned by other threads, such as subagents.",
+      default: true,
+    },
   });
 
   const db = bb.storage.database();
   bb.storage.migrate(db, migrations);
   const projectColors = createProjectColorStore(db);
+  const turns = createTurnStore(db);
 
   const readAll = (): StoredLifecycleRow[] =>
     (
@@ -591,6 +632,9 @@ export default function plugin(bb: BbPluginApi) {
   });
 
   bb.rpc.register(docksideRpcContract, {
+    async listTurns() {
+      return { turns: turns.list() };
+    },
     async listProjectColors() {
       return { colors: projectColors.list() };
     },
@@ -768,6 +812,19 @@ export default function plugin(bb: BbPluginApi) {
     if (readOne(thread.id)?.settledAt == null) return;
     bb.realtime.publish(LIFECYCLE_CHANNEL, { threadId: thread.id });
   };
+  // Inbox and Working rank threads by their turns, which bb does not report.
+  const recordTurn = (threadId: string, edge: "start" | "end") => {
+    bb.realtime.publish(TURN_CHANNEL, turns.record(threadId, edge, Date.now()));
+  };
+  bb.events.on("thread.active", ({ thread }) => recordTurn(thread.id, "start"));
+  bb.events.on("thread.idle", ({ thread }) => recordTurn(thread.id, "end"));
+  bb.events.on("thread.failed", ({ thread }) => recordTurn(thread.id, "end"));
+  bb.events.on("thread.deleted", ({ thread }) => {
+    if (turns.remove(thread.id)) {
+      bb.realtime.publish(TURN_CHANNEL, { threadId: thread.id, deleted: true });
+    }
+  });
+
   bb.events.on("thread.active", republishIfSettled);
   bb.events.on("thread.idle", republishIfSettled);
   bb.events.on("thread.failed", republishIfSettled);

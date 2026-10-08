@@ -84,6 +84,12 @@ import {
 } from "@/lib/group-expansion";
 import { familyIsPinned, groupFamiliesByStatus } from "@/lib/status-groups";
 import { groupSidebarFamilies } from "@/lib/sidebar-sections";
+import {
+  buildTurnSections,
+  resolveTurnSectionSettings,
+} from "@/lib/turn-sections";
+import { useTurnTimes } from "@/hooks/use-turn-times";
+import { TurnSections } from "@/components/inbox/turn-sections";
 
 const EMPTY_STATE_CLASS = "px-2 py-6 text-center text-xs text-muted-foreground";
 
@@ -129,6 +135,25 @@ export function ThreadInbox({
     [hostThreads, settledThreads],
   );
   const lifecycle = useLifecycle(threads);
+  const turnTimes = useTurnTimes();
+  const turnSettings = useMemo(
+    () => resolveTurnSectionSettings(settings.values),
+    [settings.values],
+  );
+  // Parked threads stay off Inbox and Working too: settling or snoozing a
+  // thread is the user saying it needs nothing from them for now.
+  const turnLists = useMemo(
+    () =>
+      buildTurnSections({
+        threads: visibleInboxThreads(threads, lifecycle.parkedThreadIds).filter(
+          (thread) => lifecycle.shelfFor(thread) === "active",
+        ),
+        turns: turnTimes,
+        includeChildThreads: turnSettings.includeChildThreads,
+        limit: turnSettings.limit,
+      }),
+    [threads, lifecycle, turnTimes, turnSettings],
+  );
   const [showSnoozed, setShowSnoozed] = useState(false);
   const [showSettled, setShowSettled] = useState(false);
   const [workspaceFilter, setWorkspaceFilter] =
@@ -681,6 +706,14 @@ export function ThreadInbox({
         {reorderAnnouncement}
       </output>
       <div className="shrink-0">
+        {turnSettings.shown && !selectionMode ? (
+          <TurnSections
+            lists={turnLists}
+            activeThreadId={activeThreadId}
+            onNavigate={onNavigate}
+            now={now}
+          />
+        ) : null}
         <div className="flex h-8 items-center gap-2 px-2.5 pb-1 text-muted-foreground">
           <Icon name="Folder" className="size-3.5" aria-hidden />
           <span className="text-2xs font-semibold uppercase tracking-wider">
