@@ -32,6 +32,11 @@ const GLYPH_TINT = "size-3 text-muted-foreground/70";
  * colour — Amp's mark is a saturated red that would be the only colour in the
  * column. The trade is that a multi-colour logo becomes a silhouette, which is
  * the right way round for a 12px glyph in a fixed-width slot.
+ *
+ * Both coloured surfaces carry the attributes bb puts on its own provider
+ * marks — `data-provider-logo` on the mask, `data-provider-icon-tint` on the
+ * drawn mark — so a theme or plugin that recolours bb's marks (True Colors
+ * does) reaches these too. Without one, nothing matches and they stay muted.
  */
 export function ProviderGlyph({
   providerId,
@@ -84,7 +89,11 @@ export function ProviderGlyph({
           "group/provider relative rounded focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
         )}
       >
-        <span className="size-3 bg-muted-foreground/70" style={mask} />
+        <span
+          data-provider-logo={maskedLogoUrl}
+          className="size-3 bg-muted-foreground/70"
+          style={mask}
+        />
         <ProviderTooltip label={displayName} />
       </span>
     );
@@ -107,6 +116,7 @@ export function ProviderGlyph({
           fillRule={mark.fillRule}
           role="img"
           aria-label={displayName}
+          data-provider-icon-tint={providerId}
           className={GLYPH_TINT}
         >
           {mark.paths.map((path) => (
