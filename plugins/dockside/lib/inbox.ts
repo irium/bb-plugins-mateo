@@ -208,9 +208,7 @@ export function searchProjectThreadGroups(
   query: string,
 ): ProjectThreadGroup[] {
   const normalized = query.trim().toLowerCase();
-  if (normalized.length === 0) {
-    return groups.filter((group) => group.families.length > 0);
-  }
+  if (normalized.length === 0) return [...groups];
 
   return groups.flatMap((group) => {
     const projectMatches = group.project.name.toLowerCase().includes(normalized);
@@ -224,7 +222,7 @@ export function searchProjectThreadGroups(
       );
       return children.length > 0 ? [{ ...family, children }] : [];
     });
-    return families.length > 0 ? [{ ...group, families }] : [];
+    return projectMatches || families.length > 0 ? [{ ...group, families }] : [];
   });
 }
 
