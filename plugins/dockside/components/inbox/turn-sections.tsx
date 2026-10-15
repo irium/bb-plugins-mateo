@@ -2,7 +2,7 @@ import { useId, useState } from "react";
 import {
   experimental_useSidebarThreadActions as useSidebarThreadActions,
   type PluginSidebarThread,
-} from "@bb/plugin-sdk/app";
+} from "@get-bb/plugin-sdk/app";
 import { Icon, type IconName } from "@/components/ui/icon";
 import { RowContextMenu } from "@/components/inbox/row-context-menu";
 import { StatusGlyph } from "@/components/inbox/status-glyph";

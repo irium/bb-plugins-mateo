@@ -1,4 +1,4 @@
-import type { PluginSidebarThread } from "@bb/plugin-sdk";
+import type { PluginSidebarThread } from "@get-bb/plugin-sdk";
 
 /**
  * A family keeps every descendant in one flat list, which is what bulk
