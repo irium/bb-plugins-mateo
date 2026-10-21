@@ -11,8 +11,11 @@ export const MAX_COLLAPSED_GROUPS = 200;
 const MAX_ID_LENGTH = 200;
 const SAFE_ID = /^[^\u0000-\u001F\u007F]+$/;
 
-/** Project groups are keyed by project id, status groups by status kind. */
-export type GroupKind = "project" | "status";
+/**
+ * Project groups are keyed by project id, status groups by status kind (Pinned
+ * and Idle included), environment sections by their sidebar-section key.
+ */
+export type GroupKind = "project" | "status" | "environment";
 
 export interface GroupExpansionStorage {
   getItem(key: string): string | null;
@@ -22,9 +25,14 @@ export interface GroupExpansionStorage {
 export interface CollapsedGroups {
   readonly project: readonly string[];
   readonly status: readonly string[];
+  readonly environment: readonly string[];
 }
 
-export const NO_COLLAPSED_GROUPS: CollapsedGroups = { project: [], status: [] };
+export const NO_COLLAPSED_GROUPS: CollapsedGroups = {
+  project: [],
+  status: [],
+  environment: [],
+};
 
 export function decodeCollapsedGroups(raw: string | null): CollapsedGroups {
   if (raw === null || raw.length > 32_000) return NO_COLLAPSED_GROUPS;
@@ -36,8 +44,9 @@ export function decodeCollapsedGroups(raw: string | null): CollapsedGroups {
     const record = parsed as Record<string, unknown>;
     const project = readIds(record.project);
     const status = readIds(record.status);
-    // One malformed half must not discard the other.
-    return { project, status };
+    const environment = readIds(record.environment);
+    // One malformed part must not discard the others.
+    return { project, status, environment };
   } catch {
     return NO_COLLAPSED_GROUPS;
   }
@@ -58,13 +67,22 @@ export function writeCollapsedGroups(
   collapsed: CollapsedGroups,
   storage: GroupExpansionStorage | null = browserStorage(),
 ): boolean {
-  if (storage === null || !validIds(collapsed.project) || !validIds(collapsed.status)) {
+  if (
+    storage === null ||
+    !validIds(collapsed.project) ||
+    !validIds(collapsed.status) ||
+    !validIds(collapsed.environment)
+  ) {
     return false;
   }
   try {
     storage.setItem(
       GROUP_EXPANSION_STORAGE_KEY,
-      JSON.stringify({ project: collapsed.project, status: collapsed.status }),
+      JSON.stringify({
+        project: collapsed.project,
+        status: collapsed.status,
+        environment: collapsed.environment,
+      }),
     );
     return true;
   } catch {
@@ -100,7 +118,7 @@ export function setGroupCollapsed(
 }
 
 /**
- * Drops collapsed ids for projects that no longer exist. Without this they
+ * Drops collapsed ids for projects and environments that no longer exist. Without this they
  * accumulate forever, and once the list reaches its cap a new collapse evicts
  * the oldest entry instead — quietly re-expanding a project the user had
  * folded on purpose.
@@ -113,11 +131,21 @@ export function setGroupCollapsed(
 export function pruneCollapsedGroups(
   collapsed: CollapsedGroups,
   liveProjectIds: Iterable<string>,
+  liveEnvironmentKeys: Iterable<string>,
 ): CollapsedGroups {
-  const live = new Set(liveProjectIds);
-  const project = collapsed.project.filter((id) => live.has(id));
-  if (project.length === collapsed.project.length) return collapsed;
-  return { ...collapsed, project };
+  const liveProjects = new Set(liveProjectIds);
+  const liveEnvironments = new Set(liveEnvironmentKeys);
+  const project = collapsed.project.filter((id) => liveProjects.has(id));
+  const environment = collapsed.environment.filter((id) =>
+    liveEnvironments.has(id),
+  );
+  if (
+    project.length === collapsed.project.length &&
+    environment.length === collapsed.environment.length
+  ) {
+    return collapsed;
+  }
+  return { ...collapsed, project, environment };
 }
 
 function readIds(value: unknown): readonly string[] {

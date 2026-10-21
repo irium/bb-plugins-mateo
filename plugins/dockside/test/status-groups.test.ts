@@ -8,7 +8,10 @@ import {
   groupFamiliesByStatus,
   projectGroupsBesidePinned,
 } from "../lib/status-groups.ts";
-import { groupSidebarFamilies } from "../lib/sidebar-sections.ts";
+import {
+  environmentSectionKey,
+  groupSidebarFamilies,
+} from "../lib/sidebar-sections.ts";
 
 function thread(overrides: Partial<PluginSidebarThread>): PluginSidebarThread {
   return {
@@ -99,6 +102,11 @@ describe("groupFamiliesByStatus", () => {
     assert.deepEqual(groups.map((group) => group.label), ["main · Mac", "main · Jupiter", "No environment"]);
     assert.deepEqual(groups.map((group) => group.families.map((family) => family.root.id)), [["mac", "mac2"], ["jupiter"], ["none"]]);
     assert.deepEqual(groupSidebarFamilies([]), []);
+    // The collapse memory prunes by this key, so it must be the section kind.
+    assert.deepEqual(
+      groups.map((group) => group.kind),
+      [families[0]!.root, families[2]!.root, families[3]!.root].map(environmentSectionKey),
+    );
   });
 });
 

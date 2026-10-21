@@ -1,5 +1,12 @@
+import type { PluginSidebarThread } from "@get-bb/plugin-sdk";
 import type { ThreadFamily } from "./inbox.ts";
 import { familyIsPinned, type ThreadSection } from "./status-groups.ts";
+
+/** IDs keep same-named worktrees on different machines separate. */
+export function environmentSectionKey(thread: PluginSidebarThread): string {
+  const { environment, host, projectId } = thread;
+  return JSON.stringify([projectId, host?.id, environment?.id ?? environment?.name]);
+}
 
 export function groupSidebarFamilies(
   families: readonly ThreadFamily[],
@@ -11,9 +18,8 @@ export function groupSidebarFamilies(
     : [];
   const environments = new Map<string, ThreadSection>();
   for (const family of remaining) {
-    const { environment, host, projectId } = family.root;
-    // IDs keep same-named worktrees on different machines separate.
-    const key = JSON.stringify([projectId, host?.id, environment?.id ?? environment?.name]);
+    const { environment, host } = family.root;
+    const key = environmentSectionKey(family.root);
     let section = environments.get(key);
     if (!section) {
       const name = environment?.name || environment?.branchName || "No environment";

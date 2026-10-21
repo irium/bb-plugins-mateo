@@ -27,9 +27,13 @@ class MemoryStorage implements GroupExpansionStorage {
 }
 
 describe("group expansion", () => {
-  it("round-trips collapsed project and status groups", () => {
+  it("round-trips collapsed project, status and environment groups", () => {
     const storage = new MemoryStorage();
-    const collapsed = { project: ["proj-a"], status: ["stale"] };
+    const collapsed = {
+      project: ["proj-a"],
+      status: ["stale"],
+      environment: ['["proj-a","mac","env"]'],
+    };
     assert.equal(writeCollapsedGroups(collapsed, storage), true);
     assert.deepEqual(readCollapsedGroups(storage), collapsed);
   });
@@ -47,6 +51,7 @@ describe("group expansion", () => {
     );
     assert.equal(isGroupCollapsed(collapsed, "project", "stale"), true);
     assert.equal(isGroupCollapsed(collapsed, "status", "stale"), false);
+    assert.equal(isGroupCollapsed(collapsed, "environment", "stale"), false);
   });
 
   it("collapses, expands again, and keeps identity when nothing changes", () => {
@@ -92,11 +97,16 @@ describe("group expansion", () => {
     assert.deepEqual(decodeCollapsedGroups(JSON.stringify(["a"])), NO_COLLAPSED_GROUPS);
     assert.deepEqual(
       decodeCollapsedGroups(JSON.stringify({ project: ["a", "a"], status: ["stale"] })),
-      { project: [], status: ["stale"] },
+      { project: [], status: ["stale"], environment: [] },
     );
     assert.deepEqual(
       decodeCollapsedGroups(JSON.stringify({ project: ["ok"], status: "stale" })),
-      { project: ["ok"], status: [] },
+      { project: ["ok"], status: [], environment: [] },
+    );
+    // Storage written before environment sections existed still reads.
+    assert.deepEqual(
+      decodeCollapsedGroups(JSON.stringify({ project: ["ok"], status: ["idle"] })),
+      { project: ["ok"], status: ["idle"], environment: [] },
     );
     assert.deepEqual(
       decodeCollapsedGroups(JSON.stringify({ project: [1, 2] })),
@@ -110,7 +120,10 @@ describe("group expansion", () => {
       (_value, index) => `p${index}`,
     );
     assert.equal(
-      writeCollapsedGroups({ project: tooMany, status: [] }, new MemoryStorage()),
+      writeCollapsedGroups(
+        { project: tooMany, status: [], environment: [] },
+        new MemoryStorage(),
+      ),
       false,
     );
     assert.deepEqual(
@@ -119,7 +132,11 @@ describe("group expansion", () => {
     );
 
     // Growth past the cap drops the oldest rather than rejecting the click.
-    const full = { project: tooMany.slice(0, MAX_COLLAPSED_GROUPS), status: [] };
+    const full = {
+      project: tooMany.slice(0, MAX_COLLAPSED_GROUPS),
+      status: [],
+      environment: [],
+    };
     const grown = setGroupCollapsed(full, "project", "newest", true);
     assert.equal(grown.project.length, MAX_COLLAPSED_GROUPS);
     assert.equal(grown.project.includes("newest"), true);
@@ -127,22 +144,37 @@ describe("group expansion", () => {
   });
 
   it("forgets projects that are gone and keeps the ones that are not", () => {
-    const collapsed = { project: ["live", "deleted"], status: ["stale"] };
-    const pruned = pruneCollapsedGroups(collapsed, ["live", "untouched"]);
+    const collapsed = {
+      project: ["live", "deleted"],
+      status: ["stale"],
+      environment: ["env-live", "env-removed"],
+    };
+    const pruned = pruneCollapsedGroups(
+      collapsed,
+      ["live", "untouched"],
+      ["env-live", "env-untouched"],
+    );
     assert.deepEqual(pruned.project, ["live"]);
+    assert.deepEqual(pruned.environment, ["env-live"]);
     // Status ids are a fixed set, so pruning must never touch them.
     assert.deepEqual(pruned.status, ["stale"]);
 
     // Nothing to drop means no write and no render.
-    assert.equal(pruneCollapsedGroups(pruned, ["live"]), pruned);
+    assert.equal(pruneCollapsedGroups(pruned, ["live"], ["env-live"]), pruned);
     assert.equal(
-      pruneCollapsedGroups(NO_COLLAPSED_GROUPS, []),
+      pruneCollapsedGroups(NO_COLLAPSED_GROUPS, [], []),
       NO_COLLAPSED_GROUPS,
+    );
+
+    // A removed environment alone is enough to prune.
+    assert.deepEqual(
+      pruneCollapsedGroups(pruned, ["live"], []).environment,
+      [],
     );
 
     // An empty live list is a real instruction here; refusing to act on a
     // list that has not loaded is the caller's job, and is asserted below.
-    assert.deepEqual(pruneCollapsedGroups(collapsed, []).project, []);
+    assert.deepEqual(pruneCollapsedGroups(collapsed, [], []).project, []);
   });
 
   it("degrades quietly when there is no storage at all", () => {
@@ -171,7 +203,16 @@ describe("group expansion wiring", () => {
     assert.match(inbox, /useState\(readCollapsedGroups\)/);
     assert.match(inbox, /writeCollapsedGroups\(next\)/);
     assert.match(inbox, /changeGroupCollapsed\("project", group\.project\.id, collapsed\)/);
-    assert.match(inbox, /changeGroupCollapsed\("status", group\.kind, collapsed\)/);
+    assert.match(
+      inbox,
+      /changeGroupCollapsed\(\s*sectionGroupKind\(group\.kind\),\s*group\.kind,\s*collapsed,?\s*\)/,
+    );
+    // Environment sections remember too; Pinned keeps one memory across presets.
+    assert.match(
+      inbox,
+      /activePreset === "environment" && kind !== "pinned" \? "environment" : "status"/,
+    );
+    assert.match(inbox, /threads\.map\(environmentSectionKey\)/);
 
     for (const source of [project, status]) {
       assert.doesNotMatch(source, /useState\(true\)/);

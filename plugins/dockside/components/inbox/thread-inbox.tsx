@@ -86,7 +86,10 @@ import {
   groupFamiliesByStatus,
   projectGroupsBesidePinned,
 } from "@/lib/status-groups";
-import { groupSidebarFamilies } from "@/lib/sidebar-sections";
+import {
+  environmentSectionKey,
+  groupSidebarFamilies,
+} from "@/lib/sidebar-sections";
 import {
   buildTurnSections,
   resolveTurnSectionSettings,
@@ -520,6 +523,11 @@ export function ThreadInbox({
     setReorderAnnouncement(announcement);
   };
 
+  // Pinned is one section in every preset, so it shares the status memory;
+  // every other section in the Environment preset is a worktree on a host.
+  const sectionGroupKind = (kind: string): GroupKind =>
+    activePreset === "environment" && kind !== "pinned" ? "environment" : "status";
+
   const changeGroupCollapsed = (
     kind: GroupKind,
     id: string,
@@ -534,10 +542,16 @@ export function ThreadInbox({
     // gets a group of its own.
     const next =
       status === "ready"
-        ? pruneCollapsedGroups(toggled, [
-            ...projects.map((project) => project.id),
-            ...unfilteredProjectGroups.map((group) => group.project.id),
-          ])
+        ? pruneCollapsedGroups(
+            toggled,
+            [
+              ...projects.map((project) => project.id),
+              ...unfilteredProjectGroups.map((group) => group.project.id),
+            ],
+            // Every loaded thread, parked ones included, so an environment
+            // whose threads are all snoozed keeps its collapse for their return.
+            threads.map(environmentSectionKey),
+          )
         : toggled;
     writeCollapsedGroups(next);
     setCollapsedGroups(next);
@@ -874,9 +888,17 @@ export function ThreadInbox({
                     preferences={preferences}
                     projectNames={projectNames}
                     projectColorOverrides={projectColorOverrides}
-                    collapsed={isGroupCollapsed(collapsedGroups, "status", group.kind)}
+                    collapsed={isGroupCollapsed(
+                      collapsedGroups,
+                      sectionGroupKind(group.kind),
+                      group.kind,
+                    )}
                     onSetCollapsed={(collapsed) =>
-                      changeGroupCollapsed("status", group.kind, collapsed)
+                      changeGroupCollapsed(
+                        sectionGroupKind(group.kind),
+                        group.kind,
+                        collapsed,
+                      )
                     }
                   />
                 ))}
