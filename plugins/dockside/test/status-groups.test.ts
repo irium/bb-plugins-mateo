@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { describe, it } from "node:test";
 import type { PluginSidebarProject, PluginSidebarThread } from "@get-bb/plugin-sdk";
 import { groupThreadsByProject } from "../lib/inbox.ts";
 import { DAY_MS } from "../lib/thread-management.ts";
-import { groupFamiliesByStatus } from "../lib/status-groups.ts";
+import {
+  groupFamiliesByStatus,
+  projectGroupsBesidePinned,
+} from "../lib/status-groups.ts";
 import { groupSidebarFamilies } from "../lib/sidebar-sections.ts";
 
 function thread(overrides: Partial<PluginSidebarThread>): PluginSidebarThread {
@@ -95,5 +99,40 @@ describe("groupFamiliesByStatus", () => {
     assert.deepEqual(groups.map((group) => group.label), ["main · Mac", "main · Jupiter", "No environment"]);
     assert.deepEqual(groups.map((group) => group.families.map((family) => family.root.id)), [["mac", "mac2"], ["jupiter"], ["none"]]);
     assert.deepEqual(groupSidebarFamilies([]), []);
+  });
+});
+
+describe("projectGroupsBesidePinned", () => {
+  it("drops a project its pinned families emptied but keeps an empty launcher", () => {
+    const groups = groupThreadsByProject(
+      [
+        thread({ id: "pinned-only", projectId: "pinned", isPinned: true }),
+        thread({ id: "mixed-pinned", projectId: "mixed", isPinned: true }),
+        thread({ id: "mixed-loose", projectId: "mixed" }),
+      ],
+      [
+        { id: "pinned", name: "Pinned", isPersonal: false },
+        { id: "mixed", name: "Mixed", isPersonal: false },
+        { id: "launcher", name: "Launcher", isPersonal: false },
+      ],
+    );
+    assert.equal(groups.find((group) => group.project.id === "launcher")?.families.length, 0);
+
+    const beside = projectGroupsBesidePinned(groups);
+    // Pinned families are drawn in the Pinned section, never twice.
+    assert.deepEqual(
+      new Map(beside.map((group) => [group.project.id, group.families.map((family) => family.root.id)])),
+      new Map([["mixed", ["mixed-loose"]], ["launcher", []]]),
+    );
+  });
+
+  it("is what the inbox draws its project list from", async () => {
+    const inbox = await readFile(
+      new URL("../components/inbox/thread-inbox.tsx", import.meta.url),
+      "utf8",
+    );
+    // Dropping every empty group here would hide empty project launchers.
+    assert.match(inbox, /showProjectGroups \? projectGroupsBesidePinned\(projectGroups\)/);
+    assert.doesNotMatch(inbox, /\.filter\(\(group\) => group\.families\.length > 0\)/);
   });
 });

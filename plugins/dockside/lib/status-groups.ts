@@ -3,7 +3,7 @@ import {
   type FamilyStatusKind,
 } from "./family-status.ts";
 import { familyMembers } from "./thread-management.ts";
-import type { ThreadFamily } from "./inbox.ts";
+import type { ProjectThreadGroup, ThreadFamily } from "./inbox.ts";
 
 export const STATUS_GROUP_ORDER = [
   "needs-you",
@@ -27,6 +27,22 @@ const STATUS_LABELS = {
 
 export function familyIsPinned(family: ThreadFamily): boolean {
   return familyMembers(family).some((thread) => thread.isPinned);
+}
+
+/**
+ * Project groups for the list under the Pinned section. Pinned families move
+ * up there, and a project they leave empty drops out so it is not drawn twice.
+ * A project that had no families to begin with is a launcher and stays: the
+ * filters upstream of this already decide when launchers belong on screen.
+ */
+export function projectGroupsBesidePinned(
+  groups: readonly ProjectThreadGroup[],
+): ProjectThreadGroup[] {
+  return groups.flatMap((group) => {
+    if (group.families.length === 0) return [group];
+    const families = group.families.filter((family) => !familyIsPinned(family));
+    return families.length === 0 ? [] : [{ ...group, families }];
+  });
 }
 
 export function groupFamiliesByStatus(

@@ -82,7 +82,10 @@ import {
   writeCollapsedGroups,
   type GroupKind,
 } from "@/lib/group-expansion";
-import { familyIsPinned, groupFamiliesByStatus } from "@/lib/status-groups";
+import {
+  groupFamiliesByStatus,
+  projectGroupsBesidePinned,
+} from "@/lib/status-groups";
 import { groupSidebarFamilies } from "@/lib/sidebar-sections";
 import {
   buildTurnSections,
@@ -877,9 +880,7 @@ export function ThreadInbox({
                     }
                   />
                 ))}
-            {showProjectGroups ? projectGroups
-              .map((group) => ({ ...group, families: group.families.filter((family) => !familyIsPinned(family)) }))
-              .filter((group) => group.families.length > 0)
+            {showProjectGroups ? projectGroupsBesidePinned(projectGroups)
               .map((group) => (
               <ProjectGroup
                 key={group.project.id}
