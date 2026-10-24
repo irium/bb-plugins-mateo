@@ -27,7 +27,7 @@ describe("workspace filter UI contract", () => {
     assert.match(inbox, /activePreset === "status"/);
     assert.match(inbox, /setWorkspaceFilter\(ALL_WORKSPACES_FILTER\)/);
     assert.match(inbox, /statusGroups\.map/);
-    assert.match(inbox, /groupSidebarFamilies\(families\)/);
+    assert.match(inbox, /groupSidebarFamilies\(families, showHostNames\)/);
     assert.match(inbox, /localStorage\.setItem\("dockside:group-by"/);
     const statusGroup = await readFile(
       new URL("../components/inbox/status-group.tsx", import.meta.url),

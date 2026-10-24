@@ -8,8 +8,25 @@ export function environmentSectionKey(thread: PluginSidebarThread): string {
   return JSON.stringify([projectId, host?.id, environment?.id ?? environment?.name]);
 }
 
+/**
+ * Machine names only tell rows apart when the threads span more than one host;
+ * on a single machine every row would repeat the same name.
+ */
+export function threadsSpanSeveralHosts(
+  threads: readonly PluginSidebarThread[],
+): boolean {
+  let firstHostId: string | undefined;
+  for (const { host } of threads) {
+    if (!host) continue;
+    if (firstHostId === undefined) firstHostId = host.id;
+    else if (host.id !== firstHostId) return true;
+  }
+  return false;
+}
+
 export function groupSidebarFamilies(
   families: readonly ThreadFamily[],
+  showHostNames = true,
 ): ThreadSection[] {
   const pinned = families.filter(familyIsPinned);
   const remaining = families.filter((family) => !familyIsPinned(family));
@@ -25,7 +42,7 @@ export function groupSidebarFamilies(
       const name = environment?.name || environment?.branchName || "No environment";
       section = {
         kind: key,
-        label: host?.name ? `${name} · ${host.name}` : name,
+        label: showHostNames && host?.name ? `${name} · ${host.name}` : name,
         families: [],
       };
       environments.set(key, section);

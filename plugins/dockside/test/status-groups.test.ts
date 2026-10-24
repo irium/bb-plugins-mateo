@@ -11,6 +11,7 @@ import {
 import {
   environmentSectionKey,
   groupSidebarFamilies,
+  threadsSpanSeveralHosts,
 } from "../lib/sidebar-sections.ts";
 
 function thread(overrides: Partial<PluginSidebarThread>): PluginSidebarThread {
@@ -107,6 +108,17 @@ describe("groupFamiliesByStatus", () => {
       groups.map((group) => group.kind),
       [families[0]!.root, families[2]!.root, families[3]!.root].map(environmentSectionKey),
     );
+  });
+
+  it("names machines only when threads span more than one host", () => {
+    const mac = { id: "mac", name: "Mac" };
+    assert.equal(threadsSpanSeveralHosts([]), false);
+    assert.equal(threadsSpanSeveralHosts([thread({ host: mac }), thread({ host: null }), thread({ host: mac })]), false);
+    assert.equal(threadsSpanSeveralHosts([thread({ host: mac }), thread({ host: { id: "jupiter", name: "Jupiter" } })]), true);
+
+    const environment = { id: "env", name: "main", branchName: "main", workspaceDisplayKind: null };
+    const families = [{ root: thread({ environment: { ...environment, workspaceDisplayKind: "managed-worktree" }, host: mac }), children: [] }];
+    assert.deepEqual(groupSidebarFamilies(families, false).map((group) => group.label), ["main"]);
   });
 });
 

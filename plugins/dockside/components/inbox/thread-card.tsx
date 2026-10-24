@@ -1,4 +1,4 @@
-import { useId, useMemo, useState, type DragEvent } from "react";
+import { useContext, useId, useMemo, useState, type DragEvent } from "react";
 import {
   experimental_useSidebarThreadPullRequest as useSidebarThreadPullRequest,
   experimental_useSidebarThreadSplit as useSidebarThreadSplit,
@@ -8,6 +8,7 @@ import {
 import { Icon, type IconName } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 import { RowContextMenu } from "@/components/inbox/row-context-menu";
+import { HostNamesContext } from "@/components/inbox/host-names";
 import {
   ProviderGlyph,
   type ProviderGlyphInfo,
@@ -743,7 +744,8 @@ function ThreadStatusLabel({
 
 function ThreadLocation({ thread }: { thread: PluginSidebarThread }) {
   const branch = thread.environment?.branchName;
-  const host = thread.host?.name;
+  const showHostNames = useContext(HostNamesContext);
+  const host = showHostNames ? thread.host?.name : undefined;
   if (branch || host) {
     return (
       <span

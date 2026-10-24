@@ -89,7 +89,9 @@ import {
 import {
   environmentSectionKey,
   groupSidebarFamilies,
+  threadsSpanSeveralHosts,
 } from "@/lib/sidebar-sections";
+import { HostNamesContext } from "@/components/inbox/host-names";
 import {
   buildTurnSections,
   resolveTurnSectionSettings,
@@ -140,6 +142,7 @@ export function ThreadInbox({
     () => mergeSettledThreads(hostThreads, settledThreads),
     [hostThreads, settledThreads],
   );
+  const showHostNames = useMemo(() => threadsSpanSeveralHosts(threads), [threads]);
   const lifecycle = useLifecycle(threads);
   const turnTimes = useTurnTimes();
   const turnSettings = useMemo(
@@ -341,12 +344,12 @@ export function ThreadInbox({
     () => {
       const families = projectGroups.flatMap((group) => group.families);
       if (activePreset === "environment") {
-        return groupSidebarFamilies(families);
+        return groupSidebarFamilies(families, showHostNames);
       }
       const groups = groupFamiliesByStatus(families, now);
       return activePreset === "status" ? groups : groups.filter((group) => group.kind === "pinned");
     },
-    [activePreset, now, projectGroups],
+    [activePreset, now, projectGroups, showHostNames],
   );
   const projectNames = useMemo(() => new Map(projects.map((project) => [project.id, project.name])), [projects]);
   const showParkedShelves = !selectionMode;
@@ -858,111 +861,113 @@ export function ThreadInbox({
         ) : null}
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-2">
-        {status === "loading" ? null : status === "error" ? (
-          // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role
-          <p role="status" className={EMPTY_STATE_CLASS}>
-            Could not load threads.
-          </p>
-        ) : !lifecycle.shelvesReady ? null : visibleTotal === 0 ? (
-          // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role
-          <p role="status" className={EMPTY_STATE_CLASS}>
-            {searching ? "No threads found" : "No threads yet"}
-          </p>
-        ) : (
-          <>
-            {statusGroups.map((group) => (
-                  <StatusGroup
-                    key={group.kind}
-                    group={group}
-                    providerInfoById={providerInfoById}
+      <HostNamesContext.Provider value={showHostNames}>
+        <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-2">
+          {status === "loading" ? null : status === "error" ? (
+            // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role
+            <p role="status" className={EMPTY_STATE_CLASS}>
+              Could not load threads.
+            </p>
+          ) : !lifecycle.shelvesReady ? null : visibleTotal === 0 ? (
+            // oxlint-disable-next-line jsx-a11y/prefer-tag-over-role
+            <p role="status" className={EMPTY_STATE_CLASS}>
+              {searching ? "No threads found" : "No threads yet"}
+            </p>
+          ) : (
+            <>
+              {statusGroups.map((group) => (
+                    <StatusGroup
+                      key={group.kind}
+                      group={group}
+                      providerInfoById={providerInfoById}
+                      activeThreadId={activeThreadId}
+                      forceExpanded={searching}
+                      lifecycle={lifecycle}
+                      onNavigate={onNavigate}
+                      now={now}
+                      selectionMode={selectionMode}
+                      selectedRootIds={selectedRootIds}
+                      selectionHintId={selectionHintId}
+                      onToggleRoot={changeSelectedRoot}
+                      preferences={preferences}
+                      projectNames={projectNames}
+                      projectColorOverrides={projectColorOverrides}
+                      collapsed={isGroupCollapsed(
+                        collapsedGroups,
+                        sectionGroupKind(group.kind),
+                        group.kind,
+                      )}
+                      onSetCollapsed={(collapsed) =>
+                        changeGroupCollapsed(
+                          sectionGroupKind(group.kind),
+                          group.kind,
+                          collapsed,
+                        )
+                      }
+                    />
+                  ))}
+              {showProjectGroups ? projectGroupsBesidePinned(projectGroups)
+                .map((group) => (
+                <ProjectGroup
+                  key={group.project.id}
+                  group={group}
+                  providerInfoById={providerInfoById}
+                  activeThreadId={activeThreadId}
+                  forceExpanded={searching}
+                  lifecycle={lifecycle}
+                  onNavigate={onNavigate}
+                  now={now}
+                  selectionMode={selectionMode}
+                  selectedRootIds={selectedRootIds}
+                  selectionHintId={selectionHintId}
+                  onToggleRoot={changeSelectedRoot}
+                  reorderEnabled={reorderEnabled}
+                  reorderDisabledReason={reorderDisabledReason}
+                  onReorder={reorderByDrag}
+                  onKeyboardMove={reorderByKeyboard}
+                  projectReorderEnabled={reorderEnabled}
+                  projectReorderDisabledReason={reorderDisabledReason}
+                  onProjectReorder={reorderProjectByDrag}
+                  onProjectKeyboardMove={reorderProjectByKeyboard}
+                  preferences={preferences}
+                  projectColorOverrides={projectColorOverrides}
+                  collapsed={isGroupCollapsed(collapsedGroups, "project", group.project.id)}
+                  onSetCollapsed={(collapsed) =>
+                    changeGroupCollapsed("project", group.project.id, collapsed)
+                  }
+                />
+              )) : null}
+              {showParkedShelves ? (
+                <>
+                  <ParkedShelf
+                    label="Snoozed"
+                    threads={snoozed}
+                    expanded={showSnoozed}
+                    onToggle={() => setShowSnoozed((open) => !open)}
+                    shelf="snoozed"
                     activeThreadId={activeThreadId}
-                    forceExpanded={searching}
                     lifecycle={lifecycle}
                     onNavigate={onNavigate}
                     now={now}
-                    selectionMode={selectionMode}
-                    selectedRootIds={selectedRootIds}
-                    selectionHintId={selectionHintId}
-                    onToggleRoot={changeSelectedRoot}
-                    preferences={preferences}
-                    projectNames={projectNames}
-                    projectColorOverrides={projectColorOverrides}
-                    collapsed={isGroupCollapsed(
-                      collapsedGroups,
-                      sectionGroupKind(group.kind),
-                      group.kind,
-                    )}
-                    onSetCollapsed={(collapsed) =>
-                      changeGroupCollapsed(
-                        sectionGroupKind(group.kind),
-                        group.kind,
-                        collapsed,
-                      )
-                    }
                   />
-                ))}
-            {showProjectGroups ? projectGroupsBesidePinned(projectGroups)
-              .map((group) => (
-              <ProjectGroup
-                key={group.project.id}
-                group={group}
-                providerInfoById={providerInfoById}
-                activeThreadId={activeThreadId}
-                forceExpanded={searching}
-                lifecycle={lifecycle}
-                onNavigate={onNavigate}
-                now={now}
-                selectionMode={selectionMode}
-                selectedRootIds={selectedRootIds}
-                selectionHintId={selectionHintId}
-                onToggleRoot={changeSelectedRoot}
-                reorderEnabled={reorderEnabled}
-                reorderDisabledReason={reorderDisabledReason}
-                onReorder={reorderByDrag}
-                onKeyboardMove={reorderByKeyboard}
-                projectReorderEnabled={reorderEnabled}
-                projectReorderDisabledReason={reorderDisabledReason}
-                onProjectReorder={reorderProjectByDrag}
-                onProjectKeyboardMove={reorderProjectByKeyboard}
-                preferences={preferences}
-                projectColorOverrides={projectColorOverrides}
-                collapsed={isGroupCollapsed(collapsedGroups, "project", group.project.id)}
-                onSetCollapsed={(collapsed) =>
-                  changeGroupCollapsed("project", group.project.id, collapsed)
-                }
-              />
-            )) : null}
-            {showParkedShelves ? (
-              <>
-                <ParkedShelf
-                  label="Snoozed"
-                  threads={snoozed}
-                  expanded={showSnoozed}
-                  onToggle={() => setShowSnoozed((open) => !open)}
-                  shelf="snoozed"
-                  activeThreadId={activeThreadId}
-                  lifecycle={lifecycle}
-                  onNavigate={onNavigate}
-                  now={now}
-                />
-                <ParkedShelf
-                  label="Settled"
-                  threads={settled}
-                  pendingCount={pendingSettled}
-                  expanded={showSettled}
-                  onToggle={() => setShowSettled((open) => !open)}
-                  shelf="settled"
-                  activeThreadId={activeThreadId}
-                  lifecycle={lifecycle}
-                  onNavigate={onNavigate}
-                  now={now}
-                />
-              </>
-            ) : null}
-          </>
-        )}
-      </div>
+                  <ParkedShelf
+                    label="Settled"
+                    threads={settled}
+                    pendingCount={pendingSettled}
+                    expanded={showSettled}
+                    onToggle={() => setShowSettled((open) => !open)}
+                    shelf="settled"
+                    activeThreadId={activeThreadId}
+                    lifecycle={lifecycle}
+                    onNavigate={onNavigate}
+                    now={now}
+                  />
+                </>
+              ) : null}
+            </>
+          )}
+        </div>
+      </HostNamesContext.Provider>
 
       <BulkDeleteDialog
         open={bulkPreview !== null}
